@@ -198,9 +198,54 @@ T.check(d(-30, 0, 200, 0, 0, 0, { cx = 384, cy = 0 }, 0, 0) == nil, 'fast mode: 
 pend = { cx = 4480, cy = 3456, ready = true }
 T.check(d(4671.3, 3520.1, 1.2 * vx37, 1.2 * vy37, 4480, 3328, pend, 0, 0, nil, 0.0) == 'commit', 'fast mode: no re-check')
 
+-- A prefetched centre is the effective request target. Comparing a ready answer only against the raw target
+-- discarded it and requested that same cached centre again on alternate frames (I-95 dev.2 capture).
+f.setReady({ { 256, 0 } })
+a, cx, cy = d(193, 0, 100, 0, 0, 0, nil, 0, 0, nil, 0.002)
+T.check(a == 'prepare' and cx == 256 and cy == 0, 'ready cache: request the cached centre instead of raw target 384')
+pend = { cx = 256, cy = 0, ready = true }
+T.check(d(194, 0, 100, 0, 0, 0, pend, 0, 0, nil, 0.002) == 'commit',
+  'ready cache: do not discard the centre that the next request would select again')
+T.check(d(194, 0, 100, 0, 0, 0, pend, 0, 0, closed, 0.002) == nil,
+  'ready cache: accepting the effective target still respects the uncovered-strip gate')
+T.check(d(321, 0, 100, 0, 0, 0, pend, 0, 0, closed, 0.002) == 'commit',
+  'ready cache: past hard commit the better block is accepted even if gated')
+T.check(d(194, 0, 200, 0, 0, 0, pend, 0, 0, nil, 0.002) == 'commit',
+  'ready cache: fast mode still accepts a better ready block without rechecking')
+T.check(d(500, 0, 100, 0, 0, 0, pend, 0, 0, closed, 4) == 'commit',
+  'ready cache: a late answer near the current edge still commits immediately')
+do
+  local current, pending, requests, discards, commits = 0, nil, 0, 0, 0
+  for frame = 0, 9 do
+    local t = frame / 60
+    local act, nx, ny = d(193 + 100 * t, 0, 100, 0, current, 0, pending, t, 0, nil, 0.002)
+    if act == 'prepare' then pending, requests = { cx = nx, cy = ny, ready = true }, requests + 1
+    elseif act == 'discard' then pending, discards = nil, discards + 1
+    elseif act == 'commit' then current, pending, commits = pending.cx, nil, commits + 1 end
+  end
+  print(string.format('  ready-cache replay (10 frames, 100 m/s): %d requests, %d discards, %d commits', requests, discards, commits))
+  T.check(requests == 1 and discards == 0 and commits == 1,
+    'ready cache: bounded replay commits once without a request/discard loop')
+end
+-- A ready candidate beside/behind the route must not gain immunity from the existing hard-distance recheck.
+-- At x=-100, y=129 heading east it is within two grid steps of the raw target but no better at hard commit.
+f.setReady({ { 0, -128 } })
+a, cx, cy = d(-100, 129, 100, 0, 0, 0, nil, 0, 0, nil, 0.002)
+T.check(a == 'prepare' and cx == 128 and cy == 128, 'ready cache: reject a candidate that is no better at hard commit')
+T.check(d(-100, 129, 100, 0, 0, 0, { cx = 0, cy = -128, ready = true }, 0, 0, nil, 0.002) == 'discard',
+  'ready cache: an existing unsafe side-block can still be discarded and replaced')
+-- If the server withdraws the cached candidate, or a turn makes it unusable, re-target normally.
+f.setReady({})
+T.check(d(194, 0, 100, 0, 0, 0, { cx = 256, cy = 0, ready = true }, 0, 0, nil, 0.002) == 'discard',
+  'ready cache removed: raw target can replace a short-lived pending centre')
+f.setReady({ { 256, 0 } })
+T.check(d(100, 300, 0, 100, 0, 0, { cx = 256, cy = 0, ready = true }, 0, 0, nil, 0.002) == 'discard',
+  'ready cache: a turn beyond the pending block reach still discards it')
+f.setReady({})
+
 -- drives (the offline model of section 3.5 with the real rule): a straight run per heading at
 -- 60 frames/s, heightmap latency L (measured by the caller and passed back), commits granted at once
-local function drive(speed, hdg, lat, ox, oy, dist)
+local function drive(speed, hdg, lat, ox, oy, dist, cached)
   local vx, vy = speed * math.cos(math.rad(hdg)), speed * math.sin(math.rad(hdg))
   local px, py, cx, cy = ox, oy, 0, 0
   local pending, t, last, minGap, minEdge, commits = nil, 0, nil, math.huge, math.huge, 0
@@ -209,6 +254,15 @@ local function drive(speed, hdg, lat, ox, oy, dist)
     t = t + dt
     px, py = px + vx * dt, py + vy * dt
     if pending and not pending.ready and t >= pending.at then pending.ready = true end
+    if cached then
+      -- An available block one grid step behind the geometric target, plus any request already finished.
+      local tx, ty = f.target(px, py, vx, vy)
+      local bx = math.abs(vx) >= math.abs(vy) and (vx > 0 and f.GRID or -f.GRID) or 0
+      local by = math.abs(vy) > math.abs(vx) and (vy > 0 and f.GRID or -f.GRID) or 0
+      local ready = { { tx - bx, ty - by } }
+      if pending and pending.ready then ready[#ready + 1] = { pending.cx, pending.cy } end
+      f.setReady(ready)
+    end
     local act, nx, ny = d(px, py, vx, vy, cx, cy, pending, t, 0, nil, lat)
     if act == 'prepare' then pending = { cx = nx, cy = ny, at = t + lat }
     elseif act == 'commit' then
@@ -219,6 +273,7 @@ local function drive(speed, hdg, lat, ox, oy, dist)
     local g0x, g0y, g1x, g1y = lattice.groundBox(cx, cy)
     minEdge = math.min(minEdge, px - g0x, g1x - px, py - g0y, g1y - py)
   end
+  if cached then f.setReady({}) end
   return minGap, minEdge, commits
 end
 local worst = { gap = math.huge, edge = math.huge, edgeFast = math.huge, edge250 = math.huge }
@@ -242,6 +297,17 @@ T.check(worst.gap >= 0.9, string.format('134 m/s, headings 0-45 deg, 0.3 s laten
 T.check(worst.edge >= 150, string.format('134 m/s at 0.3 / 0.6 / 1.2 s latency: never within 150 m of an edge (min %.0f m)', worst.edge))
 T.check(worst.edgeFast >= f.EDGE_MARGIN_FAST, string.format('200 m/s, 1.2 s latency (fast mode): on the block, >= 90 m inside (min %.0f m)', worst.edgeFast))
 T.check(worst.edge250 >= f.EDGE_MARGIN_FAST, string.format('250 m/s with a warm DEM (0.3 s): on the block (min %.0f m)', worst.edge250))
+local cachedNormal, cachedFast = math.huge, math.huge
+for hdg = 0, 359, 7 do
+  for _, lat in ipairs({ 0.3, 1.2 }) do
+    local _, en = drive(100, hdg, lat, 37, -91, 6000, true)
+    local _, ef = drive(200, hdg, lat, 37, -91, 6000, true)
+    cachedNormal, cachedFast = math.min(cachedNormal, en), math.min(cachedFast, ef)
+  end
+end
+print(string.format('  ready-cache drives: min edge %.0f m (100 m/s), %.0f m (200 m/s)', cachedNormal, cachedFast))
+T.check(cachedNormal >= 150, 'ready-cache drives: normal mode keeps at least 150 m edge margin')
+T.check(cachedFast >= f.EDGE_MARGIN_FAST, 'ready-cache drives: fast mode keeps at least 90 m edge margin')
 
 -- the same with the latency of each request drawn from 0.3-1.2 s (the rule only knows the last one)
 -- and the commit landing in a heavy slot 0-0.15 s later; all headings, and a car accelerating from

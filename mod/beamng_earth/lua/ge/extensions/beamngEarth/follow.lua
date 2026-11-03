@@ -166,9 +166,29 @@ end
 -- Block SW corner for a centre (the TerrainBlock position).
 function M.blockOrigin(cx, cy) return lattice.blockOrigin(cx, cy) end
 
--- True when the target for this pose is not the pending block (a re-request would ask for another one).
-local function retargets(px, py, vx, vy, pending)
+-- A ready block no better now or at hard commit cannot advance the follow. Apply the same test to cached
+-- candidates before selecting them, so rejecting a pending side-block does not immediately request it again.
+local function unhelpfulReady(px, py, vx, vy, cx, cy, nx, ny)
+  if M.RECHECK_S <= 0 or M.cheb(px, py, nx, ny) < M.cheb(px, py, cx, cy) then return false end
+  local t = M.timeTo(px, py, vx or 0, vy or 0, cx, cy, M.HARD_COMMIT_DIST)
+  if t == math.huge then return false end
+  local qx, qy = px + (vx or 0) * t, py + (vy or 0) * t
+  return M.cheb(qx, qy, nx, ny) >= M.cheb(qx, qy, cx, cy)
+end
+
+-- Use the same effective target for preparing and rechecking: the server's ready cache can override the
+-- geometric target. Otherwise a safe ready answer could be discarded and requested again on alternate frames.
+local function requestTarget(px, py, vx, vy, cx, cy, reach)
   local tx, ty = M.target(px, py, vx, vy)
+  if tx == cx and ty == cy then return tx, ty end -- heading back: nothing to gain
+  local r = M.preferReady(px, py, vx, vy, tx, ty, cx, cy, reach)
+  if r then return r[1], r[2] end
+  return tx, ty
+end
+
+-- True when a re-request for this pose would ask for another centre, including ready-cache selection.
+local function retargets(px, py, vx, vy, cx, cy, reach, pending)
+  local tx, ty = requestTarget(px, py, vx, vy, cx, cy, reach)
   return tx ~= pending.cx or ty ~= pending.cy
 end
 
@@ -213,7 +233,7 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
         and M.cheb(px + (vx or 0) * r, py + (vy or 0) * r, pending.cx, pending.cy) > M.PREPARE_DIST
         and M.timeTo(px, py, vx or 0, vy or 0, cx, cy, M.RECHECK_SAFE)
           > max(latency or M.LATENCY_S, M.LATENCY_S) + M.RECHECK_SLACK_S
-        and retargets(px, py, vx, vy, pending) then
+        and retargets(px, py, vx, vy, cx, cy, reach, pending) then
         return 'discard'
       end
       if d > M.HARD_COMMIT_DIST or not gate or gate(pending.cx, pending.cy) then return 'commit' end
@@ -225,14 +245,9 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
     -- it, and the next frame asks for the current target. (A block prepared while the player was
     -- behind the centre, one grid step to the side of the way it goes, took the player off the block
     -- at 200 m/s in the offline model.)
-    if pending.ready and M.RECHECK_S > 0 and pd >= d then
-      local t = M.timeTo(px, py, vx or 0, vy or 0, cx, cy, M.HARD_COMMIT_DIST)
-      if t < math.huge then
-        local qx, qy = px + (vx or 0) * t, py + (vy or 0) * t
-        if M.cheb(qx, qy, pending.cx, pending.cy) >= M.cheb(qx, qy, cx, cy) and retargets(px, py, vx, vy, pending) then
-          return 'discard'
-        end
-      end
+    if pending.ready and unhelpfulReady(px, py, vx, vy, cx, cy, pending.cx, pending.cy)
+      and retargets(px, py, vx, vy, cx, cy, reach, pending) then
+      return 'discard'
     end
     -- a prepared centre that would no longer keep the player 600 m inside its edges is useless
     if pd > reach then return 'discard' end
@@ -245,10 +260,8 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
   -- (MIN_LEAD: the block just committed is centred ahead of the player; the box test, symmetric, asked for the next one
   -- at once, and a prediction made then was overtaken by the bend: the next one once the player is past this centre)
   if M.centreAhead(px, py, vx, vy, cx, cy) then return nil end
-  local tx, ty = M.target(px, py, vx, vy)
+  local tx, ty = requestTarget(px, py, vx, vy, cx, cy, reach)
   if tx == cx and ty == cy then return nil end -- heading back towards the centre: nothing to gain
-  local r = M.preferReady(px, py, vx, vy, tx, ty, cx, cy, reach)
-  if r then return 'prepare', r[1], r[2] end
   return 'prepare', tx, ty
 end
 
@@ -266,13 +279,14 @@ function M.setReady(list)
   M.ready = r
 end
 -- Pure (but for M.ready): the ready centre to ask for instead of the target (tx, ty), or nil: within READY_STEPS grid
--- steps of it, keeping the player within reach, not the current centre; the nearest to the target, then the one
--- furthest along the way the player goes.
+-- steps of it, keeping the player within reach, not the current centre or a candidate the hard-commit check
+-- would reject; the nearest to the target, then the one furthest along the way the player goes.
 function M.preferReady(px, py, vx, vy, tx, ty, cx, cy, reach)
   local best, bd, ba = nil, math.huge, -math.huge
   for _, c in pairs(M.ready) do
     local d = M.cheb(c[1], c[2], tx, ty)
-    if d <= M.READY_STEPS * M.GRID and M.cheb(px, py, c[1], c[2]) <= reach and not (c[1] == cx and c[2] == cy) then
+    if d <= M.READY_STEPS * M.GRID and M.cheb(px, py, c[1], c[2]) <= reach and not (c[1] == cx and c[2] == cy)
+      and not unhelpfulReady(px, py, vx, vy, cx, cy, c[1], c[2]) then
       local along = (c[1] - px) * (vx or 0) + (c[2] - py) * (vy or 0)
       if d < bd or (d == bd and along > ba) then best, bd, ba = c, d, along end
     end
