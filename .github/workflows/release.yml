@@ -203,5 +203,8 @@ jobs:
 
           Steam must be running. Closing the game stops the server. See the README for details.
           EOF
+          # Reviewed version-specific notes include known runtime limitations at first publication.
+          release_notes="docs/RELEASE_$(printf '%s' "$v" | tr '.' '_').md"
+          if [ -f "$release_notes" ]; then cp "$release_notes" notes.md; fi
           gh release create "v$v" out/linux/* out/windows/* dist/BeamNG.Earth-BeamMP-Server-*.zip dist/BeamNG.Earth-Host-*.zip dist/BeamMP-Server-*-corresponding-source.zip --target "$GITHUB_SHA" --title "BeamNG.Earth $v" \
             --notes-file notes.md --generate-notes $pre

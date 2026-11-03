@@ -21,7 +21,7 @@ See [stability evidence and acceptance](docs/STABILITY_VALIDATION.md).
 If BeamMP cannot start, use `--no-beammp`
 to launch single-player immediately; the normal BeamMP wait is now bounded to 30 seconds.
 See [startup and relaunch troubleshooting](docs/RELAUNCH_TROUBLESHOOTING.md) and the
-[previous release record](docs/RELEASE_1_8_1.md) for existing validation boundaries.
+[1.8.3 release notes](docs/RELEASE_1_8_3.md) for changes and validation boundaries.
 
 **Community:** join the TGForever Discord, **[discord.gg/tgf](https://discord.gg/tgf)**, and head to the
 #beamng-earth channel to chat about the mod, get help, report bugs, help with its development, and get an IP to join a
