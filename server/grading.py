@@ -608,7 +608,9 @@ def road_rank(spec):
     cls = spec.cls or ""
     base = cls.removesuffix("_link")
     r = JUNCTION_RANK.get(base, 0) * 2
-    return r - 1 if cls != base else r
+    # Map-derived Specs keep the class (e.g. motorway) and mark ramps with link=True. Retain the
+    # legacy class suffix too: equal ranks would mistake a ramp near a mainline endpoint for a continuation.
+    return r - 1 if cls != base or getattr(spec, "link", False) else r
 
 
 def snap_junctions(plans, specs):

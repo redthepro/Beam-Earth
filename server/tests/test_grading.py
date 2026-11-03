@@ -642,6 +642,45 @@ class NeverRaisedTest(unittest.TestCase):
 
 
 class JunctionTest(unittest.TestCase):
+    def test_link_priority_supports_specs_and_legacy_class_names(self):
+        from types import SimpleNamespace
+
+        main = roads.Spec(11.8, "paved", False, "motorway")
+        link = main._replace(link=True)
+        self.assertLess(grading.road_rank(link), grading.road_rank(main))
+        self.assertEqual(grading.road_rank(link), grading.road_rank(main._replace(cls="motorway_link")))
+        self.assertEqual(grading.road_rank(link), grading.road_rank(link._replace(cls="motorway_link")))
+        # Older callers describe the class only; they need not supply the newer link field.
+        self.assertEqual(grading.road_rank(SimpleNamespace(cls="motorway")), grading.road_rank(main))
+        self.assertEqual(grading.road_rank(SimpleNamespace(cls="motorway_link")), grading.road_rank(link))
+
+    def test_motorway_ramp_at_segment_join_does_not_raise_mainline(self):
+        """I-95 replay: a ramp was 3m higher beside a motorway segment endpoint. Equal ranks treated
+        the merge as a continuation, leaving a short mound where grading blended the two roads.
+        Local synthetic geometry exercises that failure without depending on downloaded map data."""
+        x_in = np.arange(-120.0, 1.0, 4.0)
+        x_out = np.arange(0.0, 121.0, 4.0)
+        incoming = grading.Plan(np.c_[x_in, 0 * x_in], 43.0 + 0.02 * x_in, 6.9, road_half=5.9)
+        outgoing = grading.Plan(np.c_[x_out, 0 * x_out], 43.0 + 0.02 * x_out, 6.9, road_half=5.9)
+        t = np.linspace(0.0, 1.0, 31)
+        ramp = grading.Plan(np.c_[2.0 + 98.0 * t, 2.0 + 68.0 * t], 46.0 - t, 6.5, road_half=5.5)
+        before = [p.z.copy() for p in (incoming, outgoing, ramp)]
+        main_spec = roads.Spec(11.8, "paved", False, "motorway", True)
+        ramp_spec = roads.Spec(11.0, "paved", False, "motorway", True, link=True)
+
+        grading.snap_junctions([incoming, outgoing, ramp], [main_spec, main_spec, ramp_spec])
+
+        self.assertAlmostEqual(ramp.z[0], 43.04, places=6)
+        self.assertAlmostEqual(ramp.z[-1], before[2][-1], places=6)
+        np.testing.assert_array_equal(incoming.z, before[0])
+        np.testing.assert_array_equal(outgoing.z, before[1])
+        # Check the surface the tyres drive on, including overlapping road influence at the merge.
+        x = np.arange(-20.0, 21.0)
+        expected = 43.0 + 0.02 * x
+        surface = grading.grade_points(x, 0 * x, expected, [incoming, outgoing, ramp])
+        self.assertLess(float(np.max(np.abs(surface - expected))), 0.15)
+        self.assertLess(float(np.max(np.abs(np.diff(surface)))), 0.06)
+
     def test_side_road_meets_the_road_it_joins(self):
         import roads
         x = np.arange(-200, 201, 4.0)
