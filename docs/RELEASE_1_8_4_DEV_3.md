@@ -32,4 +32,17 @@ For the next drive, start a fresh capture through Esc → BeamNG.Earth → Telem
 
 ## Validation status
 
-Focused regressions reproduce the request loop and held-texture eviction before their fixes and pass afterwards. Full candidate and executable checks are recorded after the build. This is a local development candidate; it does not change the published stable release.
+Focused regressions reproduce the request loop and held-texture eviction before their fixes and pass afterwards. Full local checks completed:
+
+- Foundation gate: 43 Python modules, 687 cases (667 passed, 20 explicit platform/data skips); all 74 Lua modules; Node checks; four Rust tests; source and BeamMP package creation.
+- Independent server integration: 48 tests passed in 408.538 seconds, using a local protocol server and synthetic DEM/imagery. Retexture checks: 20 passed.
+- Packaged native variant: 52 grading/native-kernel tests passed before compilation.
+- Frozen server help and capture inspection exited successfully; frozen/source capture reports matched. Embedded version, PE version, seven packaged Lua files, frozen server code, and native digest were verified against the candidate source.
+
+The Windows executable was built from `abf76bb2e4578b3aaff1c307c00903eb3caa5388` in an isolated packaging checkout. Original tracked native files were restored, and both source and packaging checkouts were clean after the build. One optional DuckDB experimental-module collection warning is documented in the local build report; current source requirements do not use that module.
+
+`BeamNG.Earth-1.8.4-dev.3.exe`: 57,290,037 bytes.
+
+SHA-256: `b0821ea0fb3f554f7ebd10343dc37d979abba369231ff4a2b8d8af068dbbba89`.
+
+A matching executable was copied into the test user's Downloads folder. This is a local development candidate; it has not been installed or published, and it does not change the published stable release. Live gameplay, Linux execution, performance A/B results, and native-crash resolution remain outstanding.
