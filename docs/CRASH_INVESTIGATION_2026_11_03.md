@@ -57,3 +57,18 @@ In the second run's final minute, measured client capture work averaged 1.68 ms 
 The candidate requires a fresh engine session. First inspect the corrected junction at ordinary road speed. Then repeat the same high-speed route, vehicle, renderer, and graphics settings; preserve capture and dump together if it crashes. Compare capture on/off separately. A persistent crash with the same native signature warrants targeted TerrainBlock/material or positional-audio isolation in a subsequent build, rather than disabling unrelated systems by guesswork.
 
 Automated tests and replay validate the specific source corrections. They do not validate native engine lifetime, sustained driving stability, FPS improvement, or crash elimination. Release notes must retain that distinction.
+
+## Local candidate validation
+
+The Windows candidate was built from source commit `a386700081cd47b84f1f3210717beeeb28f48e99`, with version `1.8.4-dev.2`. It has not been installed into the running game or published as a GitHub release.
+
+- `python tools/quality_gate.py --par 3 --timeout 240`: passed 43 Python modules (685 cases: 665 passed, 20 explicit platform/data skips), all 74 Lua modules, Node checks, four Rust tests, and source/BeamMP package creation.
+- Additional focused road/revisit/telemetry checks: 177 cases passed. New grading, coverage-order, and audio-remapping regressions passed; the applicable grading and coverage regressions were demonstrated failing before their fixes.
+- The exact source-built native module bundled in the executable passed 45 grading and seven native-kernel tests. Native source/build inputs matched the previous verified build; the original tracked binary was restored after packaging.
+- The source-built Windows bootloader was required. Frozen `--server --help` and `--inspect-capture` exited successfully. The frozen analyzer matched the source analyzer on a preserved capture. Packaged version metadata, required Python modules, changed Lua bytes, and native module digest were checked.
+
+Local executable: `dist/1.8.4-dev.2/BeamNG.Earth-1.8.4-dev.2.exe`, 57,289,878 bytes.
+
+SHA-256: `5b5feca97f56482a5615bd8184087be2feb63c294ae57a29b361c77bb1cedf55`.
+
+Linux execution, new gameplay, native crash elimination, and performance A/B validation remain outstanding for this candidate. The previous published release and PR have not been changed by this local investigation.
