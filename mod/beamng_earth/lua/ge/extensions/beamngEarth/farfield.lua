@@ -101,6 +101,7 @@ local lattice = require('beamngEarth/lattice')
 local satmat = require('beamngEarth/satmat')
 local governor = require('beamngEarth/governor')
 local geotile = require('beamngEarth/geotile')
+local diagnostics = require('beamngEarth/diagnostics')
 
 local floor, min, max, abs, huge, ln = math.floor, math.min, math.max, math.abs, math.huge, math.log
 local sqrt, deg, rad, atan, tan = math.sqrt, math.deg, math.rad, math.atan, math.tan
@@ -167,6 +168,9 @@ local block = nil       -- committed terrain block { cx, cy, x0, y0, x1, y1 } (c
 local anchorId = nil    -- current (committed) anchor
 local session = nil     -- server session of the current anchor (switchAnchor; nil = not told)
 local doneReceived = false
+-- Only the immediately preceding commit in this server session may still have messages in
+-- flight. TCP delivers earlier streams before the next anchor_ready; reconnect resets net.rx.
+local previousAnchorId = nil
 local seqN = 0          -- arrival counter of far_tile messages
 local serial = 0        -- object name counter
 local clock = 0         -- s, transition clock (advanced by update)
@@ -708,6 +712,9 @@ local function dropCoveredOld(adds)
     doom(d.o, true)
     counters.oldCovered = counters.oldCovered + 1
   end
+  if #drop > 0 and diagnostics.enabled() then
+    diagnostics.event('far_retire', { anchor_id = anchorId, retired = #drop, reason = 1, ready = true })
+  end
 end
 
 local function finishGroup(g)
@@ -789,6 +796,11 @@ local function startGroup(g, cam)
   end
 
   -- 2. apply
+  if diagnostics.enabled() then
+    -- far_swap reason: 1 instant, 2 rise over old coverage, 3 crossover.
+    diagnostics.event('far_swap', { anchor_id = anchorId, adds = #adds, removes = #rems,
+      reason = mode == 'instant' and 1 or (mode == 'rise' and 2 or 3), ready = true })
+  end
   if unknown then log('W', 'beamngEarth', 'far_swap ' .. tostring(g.id) .. ': unknown tile ' .. unknown) end
   for _, a in ipairs(adds) do
     pending[a.key] = nil
@@ -840,7 +852,9 @@ end
 -- messages
 
 function M.onTile(msg)
-  if msg.anchorId ~= anchorId then -- late tile of a previous anchor (sent before our commit reached the server)
+  if msg.anchorId == anchorId then previousAnchorId = nil end -- ordered stream has reached the new selection
+  local lateGlobal = previousAnchorId ~= nil and msg.anchorId == previousAnchorId and M.parseGlobal(msg.key)
+  if msg.anchorId ~= anchorId and not lateGlobal then -- old local geometry is invalid in this frame
     if msg.anchorId ~= nil then lossy[msg.anchorId] = true end
     local n = tonumber(msg.slotSerial) and slotOf(msg.shape)
     if n then slotsGone[#slotsGone + 1] = { n, tonumber(msg.slotSerial), session } end -- never held
@@ -851,11 +865,15 @@ function M.onTile(msg)
     return
   end
   local key = tostring(msg.key)
+  local inst = newInst(msg, seqN + 1)
+  inst.session = session
+  if lateGlobal and not inst.global then -- malformed frame: never treat an old local placement as global
+    instGone(inst)
+    return
+  end
   local prev = pending[key]
   if prev then doom(prev, true) end -- re-sent before it was shown: the newer one wins
   seqN = seqN + 1
-  local inst = newInst(msg, seqN)
-  inst.session = session
   if inst.material then counters.textured = counters.textured + 1 end
   pending[key] = inst
   nQueued = nQueued + 1
@@ -866,8 +884,51 @@ function M.onTile(msg)
   end
 end
 
+-- An old stream already told the server this global is replaced. Its old local replacement
+-- may have been discarded at the commit, so keep the visible surface until current coverage.
+local function retireGlobal(key, aid)
+  local inst = live[key]
+  if not inst or not inst.global or inst.doomed then return end
+  local k = oldKey(session, aid, key)
+  if old[k] and old[k] ~= inst then doom(old[k], true) else oldCount = oldCount + 1 end
+  old[k], live[key] = inst, nil
+end
+
 function M.onSwap(msg)
-  if msg.anchorId ~= anchorId then return end
+  if msg.anchorId ~= anchorId then
+    if previousAnchorId == nil or msg.anchorId ~= previousAnchorId then return end
+    -- Reconcile global members only. These messages were emitted before the server read our
+    -- commit, and precede every new-anchor selection on the same ordered connection.
+    local adds, addSet, removes = {}, {}, 0
+    for _, key in ipairs(type(msg.add) == 'table' and msg.add or {}) do
+      key = tostring(key)
+      if M.parseGlobal(key) then
+        adds[#adds + 1], addSet[key] = key, true
+        local p = pending[key]
+        if p and p.prefetch then
+          p.prefetch = false
+          if p.queued then mT = mT + 1; mainQ[mT] = p end
+        end
+      else lossy[msg.anchorId] = true end
+    end
+    for _, key in ipairs(type(msg.remove) == 'table' and msg.remove or {}) do
+      key = tostring(key)
+      if M.parseGlobal(key) then
+        removes = removes + 1
+        local p = pending[key]
+        if p and p.global and not addSet[key] then pending[key] = nil; doom(p, true) end
+        retireGlobal(key, msg.anchorId)
+      end
+    end
+    if #adds > 0 then groups[#groups + 1] = { id = msg.id, add = adds, remove = {}, state = 'wait' } end
+    if diagnostics.enabled() then
+      -- reason 4 is intent reconciliation, not a reveal; the eventual reveal reports ready=true.
+      diagnostics.event('far_swap', { anchor_id = anchorId, previous_anchor_id = msg.anchorId,
+        adds = #adds, removes = removes, reason = 4, ready = false })
+    end
+    return
+  end
+  previousAnchorId = nil
   local g = { id = msg.id, add = {}, remove = {}, state = 'wait', msgIn = tonumber(msg.dIn), msgOut = tonumber(msg.dOut) }
   for _, k in ipairs(type(msg.add) == 'table' and msg.add or {}) do
     k = tostring(k)
@@ -883,7 +944,14 @@ function M.onSwap(msg)
 end
 
 function M.onRemove(msg)
+  if msg.anchorId == anchorId then previousAnchorId = nil end
   local key = tostring(msg.key)
+  if previousAnchorId ~= nil and msg.anchorId == previousAnchorId and M.parseGlobal(key) then
+    local p = pending[key]
+    if p and p.global then pending[key] = nil; doom(p, true) end
+    retireGlobal(key, msg.anchorId)
+    return
+  end
   if msg.anchorId ~= anchorId then
     -- a previous anchor's tile, swapped out now that its area is covered in the new frame
     local ok = oldKey(session, msg.anchorId, key)
@@ -908,13 +976,18 @@ function M.onRemove(msg)
 end
 
 function M.onDone(msg)
-  if msg.anchorId == anchorId then doneReceived = true end
+  if msg.anchorId == anchorId then doneReceived = true; previousAnchorId = nil end
 end
+
+-- A reconnect/new transport cannot inherit the previous connection's ordered message prefix.
+-- Existing geometry and pending reveals remain for the normal resync path.
+function M.closePreviousStream() previousAnchorId = nil end
 
 -- far_retex: point the tile's material at its re-rendered texture (time-sliced in update). The shown
 -- instance and one still loading for the same key share the material (same name); both records take
 -- the new file, so a material created later uses it too.
 function M.onRetex(msg)
+  if msg.anchorId == anchorId then previousAnchorId = nil end
   local key, tex = msg.key ~= nil and tostring(msg.key), msg.texture
   if msg.anchorId ~= anchorId or not key or type(tex) ~= 'string' or tex == '' then
     counters.retexStale = counters.retexStale + 1
@@ -1101,23 +1174,51 @@ function M.switchAnchor(newAnchorId, keepOld, blk, newSession, newAnchor)
 end
 
 switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
+  local priorAnchor = anchorId
   finishAll()
   dropAllSpares()
   ensureMaterial()
   -- global tiles stay shown (the server keeps them, any anchor's), placed into the new anchor; another server
   -- session's are a previous anchor's tiles (that server does not know them)
   local sameSession = newSession == nil or newSession == session
+  previousAnchorId = sameSession and priorAnchor ~= newAnchorId and priorAnchor or nil
   local due = minPendingSeq() -- (with the global tiles still loading: a removal after one waits for it)
-  local globals, loading = {}, {}
+  local globals, loading, retainedGroups = {}, {}, {}
   if sameSession then
+    -- The server marks a swap's adds shown when it sends the message, before our governor
+    -- reveals them. Keep that intent across a rebase: dropping the waiting group stranded
+    -- retained global adds hidden forever, because the server need not send their swap again.
+    -- Later groups can withdraw an earlier add; only each key's final intent survives.
+    local globalIntent = {}
+    for _, g in ipairs(groups) do
+      if g.state == 'wait' then
+        for _, key in ipairs(g.remove) do if M.parseGlobal(key) then globalIntent[key] = false end end
+        for _, key in ipairs(g.add) do if M.parseGlobal(key) then globalIntent[key] = g end end
+      end
+    end
     for key, inst in pairs(live) do
-      if inst.global and not inst.doomed then globals[key] = inst end
+      if inst.global and not inst.doomed and (globalIntent[key] == nil
+        or (globalIntent[key] and not pending[key])) then globals[key] = inst end
+      -- A global awaiting removal/replacement stays with the old geometry below. A mixed
+      -- group's local adds belong to the previous frame and are discarded; removing its
+      -- global parent now would leave a hole until the new anchor's local tiles arrive.
     end
     for key in pairs(globals) do live[key] = nil end
     -- ... and those still loading (sent, not swapped in): the server keeps them sent, its swap comes under the new
     -- anchor (sent again otherwise: a global tile in flight at a rebase was built and imported twice)
     for key, inst in pairs(pending) do
-      if inst.global and not inst.doomed then loading[key] = inst end
+      if inst.global and not inst.doomed and globalIntent[key] ~= false then loading[key] = inst end
+    end
+    -- Reveal retained global members only; never replay invalid old local keys or early
+    -- removals. The old coverage retires through dropCoveredOld / far_done after replacement.
+    for _, g in ipairs(groups) do
+      if g.state == 'wait' then
+        local adds = {}
+        for _, key in ipairs(g.add) do
+          if loading[key] and globalIntent[key] == g then adds[#adds + 1] = key end
+        end
+        if #adds > 0 then retainedGroups[#retainedGroups + 1] = { id = g.id, add = adds, remove = {}, state = 'wait' } end
+      end
     end
     for key in pairs(loading) do pending[key] = nil end
   end
@@ -1168,7 +1269,7 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
   -- a later terrain-follow commit, which may never arrive after a resync.
   if blk then setBlock(blk.cx, blk.cy) end
   for _, inst in pairs(globals) do applyCover(inst, false) end
-  groups, activeGroups, moving = {}, 0, {}
+  groups, activeGroups, moving = retainedGroups, 0, {}
   removals, rH, rT = keep, 1, #keep
   anchorId = newAnchorId
   if newSession ~= nil and newSession ~= session then
@@ -1178,6 +1279,15 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
   doneReceived = false
   if blk then
     for _, inst in pairs(old) do applyCover(inst, false) end
+  end
+  if diagnostics.enabled() then
+    local retained, adds = 0, 0
+    for _ in pairs(globals) do retained = retained + 1 end
+    for _ in pairs(loading) do adds = adds + 1 end
+    -- retired here is the old-generation coverage still retained, not deleted objects.
+    diagnostics.event('far_rebase', { anchor_id = anchorId, previous_anchor_id = priorAnchor,
+      retained = retained, adds = adds, waiting = #retainedGroups, retired = oldCount,
+      reason = keepOld and 1 or 2 })
   end
 end
 
@@ -1346,6 +1456,7 @@ function M.update(gov, dt, cam, player)
 
   -- 3. far_removes whose earlier adds are all shown
   if rH <= rT then
+    local retired = 0
     local due = minPendingSeq()
     while rH <= rT and removals[rH].seq < due do
       local r = removals[rH]
@@ -1358,6 +1469,7 @@ function M.update(gov, dt, cam, player)
           live[r.inst.key] = nil
         end
         doom(r.inst, true)
+        retired = retired + 1
         gov:charge('reveal', now() - t1)
         units = units + 1
       end
@@ -1365,6 +1477,9 @@ function M.update(gov, dt, cam, player)
       rH = rH + 1
     end
     if rH > rT then removals, rH, rT = {}, 1, 0 end
+    if retired > 0 and diagnostics.enabled() then
+      diagnostics.event('far_retire', { anchor_id = anchorId, retired = retired, reason = 2, ready = true })
+    end
   end
 
   -- 4. imports (hidden), group tiles first, prefetch only when nothing else waits. A tile with its
@@ -1431,6 +1546,9 @@ function M.update(gov, dt, cam, player)
   -- 5. after a rebase: once far_done came and everything received is shown, the previous anchor's
   --    tiles go (progressively, through the delete queue)
   if doneReceived and oldCount > 0 and #groups == 0 and pendingMainCount() == 0 then
+    if diagnostics.enabled() then
+      diagnostics.event('far_retire', { anchor_id = anchorId, retired = oldCount, reason = 3, ready = true })
+    end
     for _, inst in pairs(old) do doom(inst, false) end
     old, oldCount, oldFrames = {}, 0, {}
   end
@@ -1515,7 +1633,7 @@ function M.forget()
   anchorObj = nil
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
   groups, activeGroups, removals, rH, rT = {}, 0, {}, 1, 0
-  anchorId, doneReceived, block, session = nil, false, nil, nil
+  anchorId, doneReceived, block, session, previousAnchorId = nil, false, nil, nil, nil
   matOf, doomedAnchor, doomedSession, doomedFolder = {}, {}, {}, {}
   spares, spareQ, sH, sT, nSpares = {}, {}, 1, 0, 0
   slotHolder, holderPath = {}, {}

@@ -152,6 +152,27 @@ end
 -- the session
 
 local core = require('beamngEarth/core')
+-- Record position-dependent consumers before physics applies a queued origin move.
+local spatialCalls = {}
+do
+  local roads = require('beamngEarth/roads')
+  local update = roads.update
+  roads.update = function(...)
+    spatialCalls[#spatialCalls + 1] = { frame = frameNo, kind = 'roads' }
+    return update(...)
+  end
+  local guard = require('beamngEarth/edgeguard')
+  local updateGuard = guard.update
+  guard.update = function(...)
+    spatialCalls[#spatialCalls + 1] = { frame = frameNo, kind = 'guard' }
+    return updateGuard(...)
+  end
+end
+local function spatialCallsAt(n)
+  local count = 0
+  for _, call in ipairs(spatialCalls) do if call.frame == n then count = count + 1 end end
+  return count
+end
 require('beamngEarth/statusbar').enabled = false   -- its own test: test_statusbar.lua (these count text draws)
 -- the governor's wall clock: 16 ms per frame (deterministic heavy-slot timing)
 local wallNow = 0
@@ -231,9 +252,12 @@ do -- the default start's anchor on its grid (geodesy.snapAnchor), the car at it
 end
 
 scenetree.PostFxMotionBlur = { strength = 0.3 } -- the player's motion blur setting
+core._state().lagProbe = { playerId = veh.id, frames = 11, warned = true,
+  moved = { [veh.id] = { old = {0, 0, 0.5}, new = {100000, 0, 0.5} } } }
 serverSend({ type = 'anchor_ready', requestId = req.requestId, anchorId = 1, lat = req.lat, lon = req.lon, groundZ = 1180,
   terrain = terrainMsg(0, 0, '/temp/beamngEarth/s1/hm_1_0_0.png', 1100) })
 T.check(pumpUntil(function() return #received('commit_anchor') == 1 end), 'commit_anchor sent')
+T.check(core._state().lagProbe == nil, 'explicit teleport cancels an obsolete unconfirmed origin move')
 T.check(scenetree.PostFxMotionBlur.strength == 0, 'teleport: motion blur off in the commit frame (no full-screen smear)')
 T.check(received('commit_anchor')[1].anchorId == 1, 'commit anchorId')
 local ct = last('commit_terrain')
@@ -368,6 +392,8 @@ local camOld = { camData.pos.x, camData.pos.y, camData.pos.z }
 core._telemetryContext(true) -- queue/road observations in the previous world origin
 frame()
 local fN = frameNo
+T.check(spatialCallsAt(fN) == 0,
+  'same-frame rebase never passes old player coordinates to new-frame scene consumers or the edge guard')
 T.check(core._telemetryLastContext == nil and core._telemetryContextWallAt == nil,
   'rebase commit discards queue and road observations from the old world origin')
 T.check(core._telemetryContext(false).player_frame_current == false,
@@ -431,6 +457,8 @@ for id, p in pairs(farBefore) do
 end
 T.check(calls.safeTeleport == 2, 'rebase does not reset the vehicle')
 T.check(core._rebaseLag() == 0, 'measured lag = 0 frames (same frame)')
+frame()
+T.check(spatialCallsAt(frameNo) > 0, 'spatial work resumes on the first confirmed player frame')
 
 -- new anchor's far tiles, then far_done -> old tiles deleted progressively
 serverSend({ type = 'far_tile', anchorId = 1, key = 'late', shape = '/x.dae', pos = { 0, 0, 0 } }) -- stale
@@ -477,7 +505,10 @@ frame()
 local fA = frameNo
 T.check(calls.setClusterPosRelRot > moves and #received('commit_anchor') == 3, 'first lagging rebase: both phases at once (lag not known yet)')
 T.check(preRenderLog[fA].car.x > 1500, 'the camera saw one mismatched frame (car still in the old frame)')
+local lagPoses = #received('pose')
 frame()
+T.check(spatialCallsAt(frameNo) == 0 and #received('pose') == lagPoses,
+  'unconfirmed vehicle move never sends an old-frame pose or runs spatial consumers')
 T.check(type(core.status()) == 'string', 'status works')
 local function lagOf() local v = core._rebaseLag(); return v end
 T.check(lagOf() == 1, 'measured lag = 1 frame')
@@ -495,6 +526,8 @@ frame(true) -- paused frames do not count and do not apply physics
 T.check(calls.importMaps == imports, 'paused: still waiting')
 frame()
 T.check(calls.importMaps == imports + 1 and #received('commit_anchor') == nCommits + 1, 'phase 2 in frame N+1')
+T.check(spatialCallsAt(frameNo) == 0,
+  'delayed phase 2 waits for physics confirmation before running spatial consumers')
 ph = physicsLog[#physicsLog]
 T.check(ph.frame == frameNo and ph.terrainX == scenetree.findObject('bngEarthTerrain').pos.x, 'the physics step that moved the car had the new terrain')
 seen = preRenderLog[frameNo]
@@ -955,5 +988,50 @@ do
   local a, b, c = core.safeSpot(5, 5, function() return 7 end)
   T.check(a == 5 and b == 5 and c == 7, 'safeSpot: ground under the spot: the spot itself')
   T.check(core.safeSpot(0, 0, function() return nil end) == nil, 'safeSpot: no ground anywhere near: nil')
+end
+do -- Dev movement events distinguish same-frame resets from changes of world origin.
+  local state = core._state()
+  local diag, player, anchor, observed = core._diagnostics, state.player, state.anchor, core._playerAnchor
+  local rb, lag = state.rebasing, state.lagProbe
+  local events, enabled = {}, true
+  core._diagnostics = { enabled = function() return enabled end,
+    event = function(name, values) events[#events + 1] = { name = name, values = values } end }
+  state.anchor, state.rebasing, state.lagProbe = {}, nil, nil
+  core._playerAnchor = state.anchor
+  state.player = { x = 0, y = 0, speed = 100, vz = 0 }
+  core._diagnosePlayer()
+  state.player.x = 5
+  core._diagnosePlayer()
+  T.check(#events == 0, 'normal high-speed movement produces no per-frame event spam')
+  state.player.x = 6805
+  core._diagnosePlayer()
+  T.check(#events == 1 and events[1].name == 'player_jump' and events[1].values.distance_m == 6800,
+    'same-anchor recovery jump is recorded before streaming without claiming its cause')
+  state.anchor, state.player.x = {}, 0
+  core._playerAnchor = state.anchor
+  core._diagnosePlayer()
+  T.check(#events == 1, 'a change of origin is not misreported as a player jump')
+  enabled = false
+  state.player.x = 5000
+  core._diagnosePlayer()
+  T.check(#events == 1 and core._diagnosticsLastPlayer == nil, 'disabled provider retains no movement snapshot')
+  core._diagnostics, state.player, state.anchor, core._playerAnchor = diag, player, anchor, observed
+  state.rebasing, state.lagProbe = rb, lag
+end
+do -- A measurement timeout cannot turn an unconfirmed position into valid streaming input.
+  local state, pos = core._state(), veh.pos
+  local probe = { playerId = veh.id, frames = 0,
+    moved = { [veh.id] = { old = {0, 0, 0}, new = {10000, 0, 0} } } }
+  veh.pos, state.lagProbe = vec3(0, 0, 0), probe
+  for _ = 1, 15 do core.onPreRender(0.05, 0.05) end
+  T.check(state.lagProbe == probe and probe.warned and not core._spatialFrameReady(),
+    'timeout keeps spatial decisions gated and reports recovery guidance')
+  local frames = probe.frames
+  core.onPreRender(0.05, 0.05)
+  T.check(probe.frames == frames, 'timed-out confirmation bookkeeping stays bounded')
+  veh.pos = vec3(10000, 0, 0)
+  core.onPreRender(0.05, 0.05)
+  T.check(state.lagProbe == nil, 'late physics confirmation still releases the gate after a timeout')
+  veh.pos = pos
 end
 T.done('test_core_stubbed')

@@ -112,6 +112,7 @@ local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players'
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 local perflog = require('beamngEarth/perflog')         -- hitches and frame-rate drops into server.log (perflog.lua)
 M._telemetry = require('beamngEarth/telemetry')       -- fields avoid the Lua chunk's 200-local limit
+M._diagnostics = require('beamngEarth/diagnostics')  -- build-selected provider; stable releases use a no-op
 M._telemetryRoadSteps = { anchor = 'road_anchor', ghosts = 'road_ghosts', orphans = 'road_orphans',
   ['deletes+chunks'] = 'road_delete_chunk', held = 'road_held', collideRange = 'road_collide_range',
   walks = 'road_walks', far = 'road_far', collision = 'road_collision' }
@@ -175,7 +176,8 @@ local cacheClears = 0         -- answers to a clear so far (the settings page wa
 local function resetState()
   loadprogress.reset()
   M._clearTelemetryContext()
-  M._telemetryPlayerAnchor = nil
+  M._playerAnchor = nil
+  M._diagnosticsLastPlayer = nil
   st = {
     inOurLevel = false,
     active = false,          -- world logic running (rebase, far field, sky, pose)
@@ -544,6 +546,9 @@ local function commitTeleport(msg)
     st.retryAt = st.clock + rebase.RETRY_S -- don't re-request every frame
     return false
   end
+  -- This explicit placement supersedes any previous origin move, including a
+  -- move whose GE confirmation timed out. Never gate it on the obsolete probe.
+  st.lagProbe = nil
   -- (the global far tiles stay, placed into the new anchor's world: farfield.lua)
   farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId, geodesy.newAnchor(msg.lat, msg.lon))
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
@@ -569,6 +574,9 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  if M._diagnostics.enabled() then
+    M._diagnostics.event('frame_shift', { anchor_id = msg.anchorId, phase = 3 }) -- intentional teleport commit
+  end
   M._clearTelemetryContext()
   trees.reanchor(st.anchor)       -- (the geotiles it has: placed into the new world; the server drops the far ones)
   roads.replace(st.anchor, msg.anchorId)     -- (road geotiles too: roads.lua)
@@ -617,6 +625,9 @@ local function finishRebase()
   roads.collisionRebuilt()      -- (the moved colliders are solid: no second rebuild up to RELOAD_EVERY_S later)
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
+  if M._diagnostics.enabled() then
+    M._diagnostics.event('frame_shift', { anchor_id = msg.anchorId, phase = 2 }) -- scene committed
+  end
   M._clearTelemetryContext()
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(st.anchor.lat, st.anchor.lon)
@@ -637,10 +648,10 @@ end
 local function moveVisible(probe)
   local veh = getPlayerVehicle(0)
   local m = probe.playerId and probe.moved[probe.playerId]
-  if not veh or not m or veh:getID() ~= probe.playerId then return true end
+  if not veh or not m or veh:getID() ~= probe.playerId then return true, 2 end -- original player no longer applies
   local p = veh:getPosition()
   local function d2(q) return (p.x - q[1]) ^ 2 + (p.y - q[2]) ^ 2 + (p.z - q[3]) ^ 2 end
-  return d2(m.new) < d2(m.old)
+  return d2(m.new) < d2(m.old), 1 -- position observed nearer the destination
 end
 
 -- Origin rebase (V1_1_SPEC 1b), purpose 'rebase' or 'resync'.
@@ -685,8 +696,15 @@ local function commitRebase(msg, purpose)
     playerOld = m and m.old or { st.player and st.player.x or 0, st.player and st.player.y or 0, st.player and st.player.z or 0 },
     couplings = couplings }
   st.lagProbe = { moved = moved, playerId = playerId, frames = 0 }
+  if M._diagnostics.enabled() then
+    M._diagnostics.event('frame_shift', { anchor_id = msg.anchorId, previous_anchor_id = st.anchorId, phase = 1 })
+  end
   st.rebasing.phase1Ms = sw()
-  if moveVisible(st.lagProbe) then
+  local visible, visibleReason = moveVisible(st.lagProbe)
+  if visible then
+    if M._diagnostics.enabled() then
+      M._diagnostics.event('frame_shift', { anchor_id = msg.anchorId, phase = 4, reason = visibleReason, waiting = 0 })
+    end
     st.lagProbe = nil -- applied synchronously: no lag at all
     st.rebasing.wait = 0
   end
@@ -895,6 +913,7 @@ end
 local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
+    farfield.closePreviousStream()
     -- sessions: the session folders our far tiles still use (a restarted server keeps them)
     -- slotsHeld: the pooled shape slots our objects hold, if the server is the one that sent them (a reconnect)
     local held
@@ -913,6 +932,7 @@ local function onMessage(msg)
       readySet = 1 })      -- (it takes a built block near its target: follow.preferReady, 'terrain_ready_set')
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
+    farfield.closePreviousStream()
     M._telemetry.disconnected()
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
     cacheInfo = nil
@@ -929,6 +949,7 @@ local function onMessage(msg)
     M._telemetry.setStatus(msg)
     if starting and M._telemetry.isActive() then M._clearTelemetryContext() end
   elseif t == 'hello' then
+    farfield.closePreviousStream()
     st.sessionId = msg.sessionId
     st.refreshLater = nil       -- (a restarted server numbers its anchors from 1 again)
     roads.setSession(msg.sessionId)   -- the road / building tiles' pooled shape files belong to this server
@@ -1268,8 +1289,8 @@ end
 local function updatePlayer(dt)
   st.player = nil
   -- A delayed vehicle move can still expose old GE coordinates until physics /
-  -- onPreRender confirms it. Keep that observation unqualified for spatial probes.
-  M._telemetryPlayerAnchor = not st.lagProbe and st.anchor or nil
+  -- onPreRender confirms it. Qualify both gameplay decisions and diagnostic probes.
+  M._playerAnchor = not st.lagProbe and st.anchor or nil
   st.cam = cameraState()
   local veh = getPlayerVehicle(0)
   if not st.anchor then return end
@@ -1292,6 +1313,33 @@ local function updatePlayer(dt)
   st.player = { x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z, lat = lat, lon = lon, dist = hypot(p.x, p.y),
     speed = v:length() }
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
+end
+
+-- Scene/interest decisions must use a player sampled in the committed world frame.
+-- A rebase can finish after updatePlayer, or before physics exposes the requested
+-- vehicle move. Keep the already-transformed scene intact until the next valid
+-- sample; do not send a pose or seed guard/drop history from the other frame.
+function M._spatialFrameReady()
+  return not st.rebasing and not st.lagProbe and M._playerAnchor == st.anchor
+end
+
+-- Observe discontinuities before drop/edge recovery and streaming decisions. This
+-- records movement, not intent: resets and crash recovery can produce these jumps.
+function M._diagnosePlayer()
+  if not M._diagnostics.enabled() then M._diagnosticsLastPlayer = nil; return end
+  local p, last = st.player, M._diagnosticsLastPlayer
+  if not p or not M._spatialFrameReady() then M._diagnosticsLastPlayer = nil; return end
+  if last and last.anchor == st.anchor and last.camera == p.camera then
+    local distance = hypot(p.x - last.x, p.y - last.y)
+    if distance > drophold.JUMP_M then
+      M._diagnostics.event('player_jump', { anchor_id = st.anchorId, distance_m = distance,
+        speed_mps = p.speed, vertical_speed_mps = p.vz })
+    end
+  end
+  -- Reuse one tiny snapshot; stable and inactive builds never allocate it.
+  last = last or {}
+  last.x, last.y, last.anchor, last.camera = p.x, p.y, st.anchor, p.camera
+  M._diagnosticsLastPlayer = last
 end
 
 -- Drop hold (drophold.lua): a car dropped far off the block (the game's drop-at-camera) is held at rest where it was
@@ -1357,6 +1405,9 @@ local function updateDropHold(dt)
   -- (no server: no road tiles will come, nothing to wait for)
   local nearReady = function(x, y) return not net.isConnected() or roads.readyAround(st.anchorId, x, y, drophold.NEAR_M) end
   if not st.paused and drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy, nearReady) == 'start' then
+    if M._diagnostics.enabled() then
+      M._diagnostics.event('drop_hold', { anchor_id = st.anchorId, reason = 1, ready = false })
+    end
     log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; paused until its ground, bridges ' ..
       'and buildings load', box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
     loadprogress.start(st.clock)    -- a jump the mod did not make (F7, the world editor): the bar says "Loading" too
@@ -1372,6 +1423,7 @@ local function updateDropHold(dt)
     h.pausedByUs = nil
     roads.setHold(false)
     log('I', 'beamngEarth', 'drop hold: resumed by the player')
+    if M._diagnostics.enabled() then M._diagnostics.event('drop_hold', { reason = 2 }) end
     return
   end
   local gz = nil
@@ -1392,6 +1444,10 @@ local function updateDropHold(dt)
   local near = nearReady(h.x, h.y)
   local act, z = drophold.step(h, st.clock, box, serial, gz, building, near)
   if act == nil then return end
+  if M._diagnostics.enabled() then
+    M._diagnostics.event('drop_hold', { anchor_id = st.anchorId, ready = near,
+      reason = act == 'place' and 3 or act == 'timeout' and 4 or 5 })
+  end
   if act == 'place' then
     if simhold.carHeld() then simPause(false) end     -- (BeamMP: the car active again before it is placed)
     setCarAt(veh, h.x, h.y, z)
@@ -1649,11 +1705,16 @@ local function updateGuard()
     g.mode = 'off'
     return
   end
+  local beforeMode, beforeHolds, beforeRescues = g.mode, g.holds, g.rescues
   local ok, err = pcall(edgeguard.update, g, veh, box, st.clock)
   if not ok then
     guardFailed, g.mode = true, 'off'
     pcall(edgeguard.release, g)
     log('E', 'beamngEarth', 'edge guard turned off: ' .. tostring(err))
+  end
+  if M._diagnostics.enabled() and (g.mode ~= beforeMode or g.holds ~= beforeHolds or g.rescues ~= beforeRescues) then
+    M._diagnostics.event('edge_guard', { anchor_id = st.anchorId, holds = g.holds, rescues = g.rescues,
+      mode = ({ off = 0, clear = 1, warn = 2, hold = 3, air = 4 })[g.mode] })
   end
 end
 
@@ -1972,7 +2033,7 @@ function M._telemetryContext(full)
   local p, b = st.player, st.block
   -- updateWorld can rebase after updatePlayer. The next capture runs before
   -- updatePlayer: never compare the old-frame position with new-frame terrain.
-  c.player_frame_current = p ~= nil and M._telemetryPlayerAnchor == st.anchor and not st.rebasing
+  c.player_frame_current = p ~= nil and M._spatialFrameReady()
   local speed = p and math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2) or 0
   c.speed_mps, c.lua_mb = speed, collectgarbage('count') / 1024
   c.vertical_speed_mps = p and p.vz or nil
@@ -2125,6 +2186,7 @@ local function onUpdate(dtReal, dtSim)
     end
     M._telemetryCostMs = hitchClock() - M._telemetryStart
   else M._telemetryCostMs = 0 end
+  M._diagnostics.frame(frameMs0)
   if st.inOurLevel and not st.paused then
     local okP, errP = pcall(perfFrame, frameMs0, hrec)
     if not okP then log('W', 'beamngEarth', 'perf log: ' .. tostring(errP)) end
@@ -2218,7 +2280,9 @@ local function onUpdate(dtReal, dtSim)
   end
 
   updatePlayer(dtReal)
+  M._diagnosePlayer()
   if st.active then
+    if not M._spatialFrameReady() then drawUi(dtReal); return end
     if not dropHoldFailed and (not st.paused or dropHold.active) then     -- (it runs on while it paused the game)
       local ok, err = pcall(updateDropHold, dtReal)
       if not ok then          -- never break the frame: off for the session, said once
@@ -2231,6 +2295,7 @@ local function onUpdate(dtReal, dtSim)
     t = mark('player', t)
     updateWorld(dtReal)
     t = mark('world', t)
+    if not M._spatialFrameReady() then drawUi(dtReal); return end
     -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
@@ -2306,7 +2371,12 @@ local function onPreRender(dtReal, dtSim)
   M._paceLast = now
   local probe = st.lagProbe
   if not probe then return end
-  if moveVisible(probe) then
+  local visible, visibleReason = moveVisible(probe)
+  if visible then
+    if M._diagnostics.enabled() then
+      M._diagnostics.event('frame_shift', { anchor_id = st.anchorId, phase = 4, reason = visibleReason,
+        waiting = probe.frames })
+    end
     st.lagProbe = nil
     if probe.frames ~= rebaseLag then
       log('W', 'beamngEarth', string.format('rebase: vehicle move became visible after %d frame(s), expected %d; '
@@ -2317,10 +2387,18 @@ local function onPreRender(dtReal, dtSim)
     rebaseLag = math.min(probe.frames, 3)
     st.lastMoveLag = probe.frames
   elseif (dtSim or dtReal or 0) > 0 then
-    probe.frames = probe.frames + 1
-    if probe.frames > LAG_PROBE_FRAMES then
-      st.lagProbe = nil
-      log('W', 'beamngEarth', 'rebase: vehicle move not visible after ' .. LAG_PROBE_FRAMES .. ' frames')
+    probe.frames = math.min(probe.frames + 1, LAG_PROBE_FRAMES + 1)
+    if probe.frames > LAG_PROBE_FRAMES and not probe.warned then
+      probe.warned = true
+      -- A timeout is not confirmation. Keep net/UI/physics alive (pausing could
+      -- prevent the queued move completing), but do not cull/send an invalid pose.
+      -- A later confirmation, player change, or explicit Earth teleport releases it.
+      setStatus('World shift waiting for the vehicle. Use an Earth teleport if it does not recover.')
+      log('W', 'beamngEarth', 'rebase: vehicle move not visible after ' .. LAG_PROBE_FRAMES
+        .. ' frames; spatial updates held until confirmation or another placement')
+      if M._diagnostics.enabled() then
+        M._diagnostics.event('frame_shift', { anchor_id = st.anchorId, phase = 5, waiting = probe.frames })
+      end
     end
   end
 end
@@ -2457,7 +2535,8 @@ M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
   M._clearTelemetryContext()
-  M._telemetryPlayerAnchor = nil
+  M._playerAnchor = nil
+  M._diagnosticsLastPlayer = nil
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   groundcover.enginePatch(false)
