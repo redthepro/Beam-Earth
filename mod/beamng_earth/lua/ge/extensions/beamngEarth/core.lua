@@ -1972,17 +1972,19 @@ function M._telemetryContext(full)
     c.block_edge_m = math.max(0, edge)
   end
   if full then
-    local f, r, tr = farfield.stats(), roads.status(), trees.status()
+    local f, r, treeStats = farfield.stats(), roads.status(), trees.status()
     c.far_loaded, c.far_queued, c.far_pending = f.live, f.queued, f.groups
     c.far_old, c.far_materials = (f.old or 0) + (f.deleting or 0), f.materials
     c.roads_loaded, c.roads_queued, c.colliders_queued = r.tiles, r.queued, r.walksQueued
     c.roads_solid_around = r.solidAround
-    c.trees_loaded, c.trees_pending, c.trees_items, c.trees_errors = tr.tiles, tr.pending, tr.items, tr.errors
+    c.trees_loaded, c.trees_pending, c.trees_items, c.trees_errors = treeStats.tiles, treeStats.pending, treeStats.items, treeStats.errors
     c.road_ahead_m, c.road_ahead_s = nil, nil
-    c.road_probe_m, c.road_probe_step_m, c.road_probe_limited = 2000, 32, false
+    -- roads.ahead samples every 32 m. Use a sampled endpoint, not an
+    -- unobserved final 16 m between 1984 and a nominal 2000 m horizon.
+    c.road_probe_m, c.road_probe_step_m, c.road_probe_limited = 1984, 32, false
     if p and speed > 1 then
-      local distance, limited = 2000, true
-      for _, tile in ipairs(roads.ahead(p.x, p.y, (p.vx or 0) / speed, (p.vy or 0) / speed, 2000)) do
+      local distance, limited = 1984, true
+      for _, tile in ipairs(roads.ahead(p.x, p.y, (p.vx or 0) / speed, (p.vy or 0) / speed, 1984)) do
         if tile.arrived == false or not tile.road or (tile.col ~= 'none' and tile.col ~= 'solid') then
           distance, limited = math.max(0, tile.d - 32), false
           break

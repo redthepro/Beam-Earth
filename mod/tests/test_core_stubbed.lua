@@ -850,7 +850,7 @@ do -- normal gameplay capture: actual core / settings / socket wiring, no MCP or
   state.player = { x = 0, y = 0, vx = 107.2896, vy = 0, lat = 38, lon = -77 }
   state.block = { cx = 0, cy = 0 }
   local ctx = core._telemetryContext(true)
-  T.check(ctx.road_probe_m == 2000 and ctx.road_probe_step_m == 32 and type(ctx.road_ahead_m) == 'number'
+  T.check(ctx.road_probe_m == 1984 and ctx.road_probe_step_m == 32 and type(ctx.road_ahead_m) == 'number'
     and ctx.speed_mps > 107 and ctx.block_edge_s > 0, '240 mph context reports bounded road / collider probe and terrain edge time')
   T.check(ctx.lat == nil and ctx.lon == nil, 'coordinate opt-out applies even with a player location')
   state.player, state.block = player0, block0

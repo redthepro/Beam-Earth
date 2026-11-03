@@ -133,6 +133,7 @@ MOD_TO_SERVER = {
     "terrain_patch": {"anchorId": F(int), "key": F(str), "x0": F(NUM), "y0": F(NUM), "x1": F(NUM), "y1": F(NUM)},
     # the performance log (perflog.lua; additive): lines for the server's log (hitches, drops, minutes, the machine)
     "perf_log": {"lines": F((list, dict))},
+    "telemetry_control": {"action": F(str), "include_location": F(bool)},
     # BeamMP shared generation (peerwork.py, mpsession.lua): our world server serves our group; the players on our
     # anchor ({id, host, port, code, weight} each). (Commented out 2026-10-27: shared world building is off.)
     # "share": {"port": F(int, OPT)},       # (the BeamMP server's sharing port, its plugin's bngeConfig)
@@ -321,6 +322,10 @@ SERVER_TO_MOD = {
     "terrain_patch": {"anchorId": F(int), "key": F(str), "parts": F(list, OPT),     # [{path, x, y}]: small meshes
                       "tris": F(int, OPT), "error": F(str, OPT)},
     "app_paths": {"cacheDir": F(str), "cacheNext": F(str), "beammp": F(str), "result": F(dict, OPT)},
+    "telemetry_status": {"available": F(bool), "active": F(bool), "session": F(str),
+                         "samples": F(int), "dropped": F(int), "bytes": F(int), "error": F(str),
+                         "status": F(str), "include_location": F(bool), "write_ms": F(NUM),
+                         "processing_ms": F(NUM), "queue_depth": F(int)},
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT),
               "pinnedBytes": F(int, OPT)},     # the saved areas' files (areas.py; kept by a clear)

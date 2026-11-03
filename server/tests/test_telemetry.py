@@ -308,5 +308,93 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
 
+class ClientContractTests(unittest.TestCase):
+    def test_fully_paused_lua_window_with_stale_speed_is_not_high_speed_coverage(self):
+        from lupa.luajit21 import LuaRuntime
+        runtime = LuaRuntime()
+        path = Path(__file__).resolve().parents[2] / "mod/beamng_earth/lua/ge/extensions/beamngEarth/telemetry.lua"
+        module = runtime.execute(path.read_text(encoding="utf-8"))
+        module.setStatus(runtime.table_from({"active": True, "session": "paused-contract"}))
+        context = runtime.eval("function() return {speed_mps=107.2896, road_ahead_s=18.49, road_probe_limited=true, queues_age_s=0.8} end")
+        send = runtime.eval("function() return true end")
+        row = None
+        for _ in range(60):
+            module.simulation(0)
+            row = module.frame(16.7, runtime.table_from({"telemetry": .1}), None, context, None, send) or row
+
+        def convert(value):
+            if not hasattr(value, "items"):
+                return value
+            pairs = dict(value.items())
+            if pairs and all(type(k) is int for k in pairs):
+                return [convert(pairs[k]) for k in range(1, len(pairs) + 1)]
+            return {k: convert(v) for k, v in pairs.items()}
+
+        packet = convert(row)
+        self.assertEqual(packet["frame"]["paused_frames"], 60)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "paused-lua.jsonl"
+            path.write_text(json.dumps({"kind": "sample", "elapsed_s": 1.1, "client": packet}) + "\n")
+            report = inspect_capture.inspect(path)
+        self.assertEqual(report["high_speed_wall_s"], 0)
+        self.assertEqual(report["worst_windows"][0]["queues_age_s"], .8)
+        self.assertTrue(report["worst_windows"][0]["road_probe_limited"])
+        text = inspect_capture.render(report)
+        self.assertIn("road ahead at least 18.5 s (probe limit reached)", text)
+        self.assertIn("queue observation 0.8 s old", text)
+        self.assertIn("Fully paused windows are excluded", text)
+
+    def test_actual_lua_packet_matches_capture_schema(self):
+        from lupa.luajit21 import LuaRuntime
+        runtime = LuaRuntime()
+        path = Path(__file__).resolve().parents[2] / "mod/beamng_earth/lua/ge/extensions/beamngEarth/telemetry.lua"
+        module = runtime.execute(path.read_text(encoding="utf-8"))
+        module.setStatus(runtime.table_from({"active": True, "session": "contract", "include_location": False}))
+        context = runtime.eval("function() return {speed_mps=107.2896, queues_age_s=0.2, lat=38, lon=-77} end")
+        send = runtime.eval("function() return true end")
+        row = None
+        for index in range(60):
+            module.simulation(0 if index < 10 else 0.0167)
+            row = module.frame(16.7, runtime.table_from({"terrain": 2, "telemetry": .25}),
+                               None, context, None, send) or row
+
+        def convert(value):
+            if not hasattr(value, "items"):
+                return value
+            pairs = dict(value.items())
+            if pairs and all(type(k) is int for k in pairs):
+                return [convert(pairs[k]) for k in range(1, len(pairs) + 1)]
+            return {k: convert(v) for k, v in pairs.items()}
+
+        packet = convert(row)
+        cleaned = telemetry.clean_client(packet)
+        self.assertIsNotNone(cleaned)
+        self.assertEqual(cleaned["frame"], packet["frame"])
+        self.assertEqual(sum(cleaned["frame"]["histogram"]), 60)
+        self.assertEqual(cleaned["mod_ms"]["terrain"], 120)
+        self.assertEqual(cleaned["context"]["queues_age_s"], 0.2)
+        self.assertNotIn("lat", cleaned["context"])
+        self.assertNotIn("lon", cleaned["context"])
+        self.assertEqual(cleaned["mod_ms"]["telemetry"], 15)
+        self.assertEqual(cleaned["frame"]["paused_frames"], 10)
+        self.assertNotIn("telemetry_ms", cleaned["context"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actual-lua.jsonl"
+            path.write_text(json.dumps({"kind": "sample", "elapsed_s": 2, "client": packet}) + "\n")
+            report = inspect_capture.inspect(path)
+        self.assertEqual(report["client_work"]["telemetry_ms_per_window"]["mean"], 15)
+        self.assertAlmostEqual(report["high_speed_wall_s"], 1.002)
+        self.assertEqual(report["high_speed_partial_pause_windows"], 1)
+        self.assertEqual(report["worst_windows"][0]["received_elapsed_s"], 2)
+        text = inspect_capture.render(report)
+        self.assertIn("Client capture work per sample window: mean 15.0 ms", text)
+        self.assertIn("Simulation/wall ratio (includes paused intervals)", text)
+        self.assertIn("paused frames: 10", text)
+        self.assertIn("Window received at t=2.0 s", text)
+        self.assertIn("not exact hitch occurrence times", text)
+        self.assertIn("1 partially paused windows count their whole measured duration", text)
+        self.assertNotIn("Previous client telemetry work", text)
+
+
 if __name__ == "__main__":
     unittest.main()

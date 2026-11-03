@@ -48,8 +48,8 @@ def inspect(path):
            "resource_samples": 0, "invalid_lines": 0, "truncated_tail": False, "sequence_gaps": 0,
            "elapsed_s": 0.0, "frame_wall_s": 0.0, "frames": 0, "max_frame_ms": 0.0,
            "over_33": 0, "over_50": 0, "over_100": 0, "paused_frames": 0,
-           "histogram": [0] * len(HISTOGRAM_MS), "high_speed_wall_s": 0.0,
-           "context": {}, "server": {}, "resources": {}, "markers": [], "worst_windows": [],
+           "histogram": [0] * len(HISTOGRAM_MS), "high_speed_wall_s": 0.0, "high_speed_partial_pause_windows": 0,
+           "context": {}, "server": {}, "resources": {}, "client_work": {}, "markers": [], "worst_windows": [],
            "capture": {}, "coordinates_recorded": False, "resource_discovery_failures": 0,
            "resource_partial_groups": 0, "game_resource_missing": 0}
     prev_seq = None
@@ -115,16 +115,24 @@ def inspect(path):
                     out[key] += frame.get(key, 0)
                 out["histogram"] = [a + b for a, b in zip(out["histogram"], frame["histogram"])]
                 context = client["context"]
-                if context.get("speed_mps", 0) * 2.236936 >= 200:
+                if (context.get("speed_mps", 0) * 2.236936 >= 200
+                        and frame.get("paused_frames", 0) < frame["frames"]):
                     out["high_speed_wall_s"] += frame["wall_ms"] / 1000
+                    if frame.get("paused_frames", 0) > 0:
+                        out["high_speed_partial_pause_windows"] += 1
                 for key, value in context.items():
                     _range(out["context"], key, value)
                 _range(out["context"], "sim_wall_ratio", frame.get("sim_wall_ratio"))
+                # core emits a sum of per-frame capture timings in each sample window;
+                # it does not emit context.telemetry_ms or a single previous-frame time.
+                _range(out["client_work"], "telemetry_ms_per_window", client["mod_ms"].get("telemetry"))
                 worst = client.get("worst") or {}
                 hitch_context = worst.get("context") or context
-                window = {"elapsed_s": elapsed, "max_ms": frame.get("max_ms", 0),
+                window = {"received_elapsed_s": elapsed, "max_ms": frame.get("max_ms", 0),
                           "speed_mph": hitch_context["speed_mps"] * 2.236936 if "speed_mps" in hitch_context else None,
                           "road_ahead_s": hitch_context.get("road_ahead_s"),
+                          "road_probe_limited": hitch_context.get("road_probe_limited"),
+                          "queues_age_s": hitch_context.get("queues_age_s"),
                           "server_backlog": hitch_context.get("server_backlog"),
                           "mod_ms": worst.get("mod_ms", {}), "engine_ms": worst.get("engine_ms", {})}
                 out["worst_windows"].append(window)
@@ -154,7 +162,7 @@ def inspect(path):
     out["p50_ms"] = _pct(out["histogram"], .5, out["max_frame_ms"])
     out["p95_ms"] = _pct(out["histogram"], .95, out["max_frame_ms"])
     out["p99_ms"] = _pct(out["histogram"], .99, out["max_frame_ms"])
-    for group in ("context", "server", "resources"):
+    for group in ("context", "server", "resources", "client_work"):
         for item in out[group].values():
             item["mean"] = item.pop("sum") / item["n"]
     return out
@@ -178,14 +186,15 @@ def render(report):
              f"Histogram upper-bound p50/p95/p99: {_fmt(r['p50_ms'])}/{_fmt(r['p95_ms'])}/{_fmt(r['p99_ms'])} ms. "
              "Percentiles combine frame counts, not averages of per-second percentiles.",
              f"Frames over 33.4/50/100 ms: {r['over_33']}/{r['over_50']}/{r['over_100']}; "
-             f"paused frames: {r['paused_frames']}. Samples at 200+ MPH cover {_fmt(r['high_speed_wall_s'])} s.", ""]
+             f"paused frames: {r['paused_frames']}. Reported 200+ MPH window exposure: {_fmt(r['high_speed_wall_s'])} s (estimate). "
+             f"Fully paused windows are excluded; {r['high_speed_partial_pause_windows']} partially paused windows count their whole measured duration. "
+             "A window's reported velocity does not prove that speed throughout the window.", ""]
     lines += ["## Streaming and memory", ""]
     for key, label, units in (("speed_mps", "Speed", "m/s"), ("road_ahead_s", "Straight-ahead ready road horizon", "s"),
                               ("block_edge_s", "Time to current terrain edge", "s"),
                               ("server_backlog", "Server tile backlog", "tiles"),
                               ("trees_pending", "Pending trees", "items"), ("lua_mb", "Lua heap", "MiB"),
-                              ("sim_wall_ratio", "Simulation/wall ratio", ""),
-                              ("telemetry_ms", "Previous client telemetry work", "ms")):
+                              ("sim_wall_ratio", "Simulation/wall ratio (includes paused intervals)", "")):
         value = r["context"].get(key)
         if value:
             lines.append(f"- {label}: min {_fmt(value['min'])}, max {_fmt(value['max'])}, "
@@ -206,15 +215,27 @@ def render(report):
         lines.append(f"- Longest time since a received gameplay sample: {_fmt(age['max'])} s.")
     lines += ["", "The road horizon is a conservative straight-line probe, not a guarantee of every collision surface. "
               "Resource groups sum resident pages, including shared pages more than once. Memory changes do not by themselves prove a leak. "
-              "Rendering, driver and OS stalls can remain outside the available timers.", "", "## Worst sampled windows", ""]
+              "Rendering, driver and OS stalls can remain outside the available timers.", "", "## Worst sampled windows", "",
+              "Times below identify when the companion received the sample window; they are not exact hitch occurrence times.", ""]
     for item in r["worst_windows"]:
         def top(values):
             return ", ".join(f"{key} {_fmt(value)} ms" for key, value in sorted(values.items(), key=lambda p: -p[1])[:3]) or "unavailable"
-        lines.append(f"- t={_fmt(item['elapsed_s'])} s: {_fmt(item['max_ms'])} ms frame, "
-                     f"{_fmt(item['speed_mph'])} MPH, road ahead {_fmt(item['road_ahead_s'])} s; "
+        lead = ("at least " if item["road_probe_limited"] is True else "") + _fmt(item["road_ahead_s"])
+        if item["road_probe_limited"] is True:
+            lead += " s (probe limit reached)"
+        else:
+            lead += " s"
+        lines.append(f"- Window received at t={_fmt(item['received_elapsed_s'])} s: worst frame {_fmt(item['max_ms'])} ms, "
+                     f"{_fmt(item['speed_mph'])} MPH, road ahead {lead}, "
+                     f"queue observation {_fmt(item['queues_age_s'])} s old; "
                      f"mod timers: {top(item['mod_ms'])}; engine timers: {top(item['engine_ms'])}.")
     lines += ["", "Timers are correlated measurements, not a diagnosis of what caused a hitch.", "", "## Capture overhead and gaps", ""]
     cap = r["capture"]
+    client_work = r["client_work"].get("telemetry_ms_per_window")
+    if client_work:
+        lines.append(f"Client capture work per sample window: mean {_fmt(client_work['mean'])} ms, "
+                     f"max {_fmt(client_work['max'])} ms; {_fmt(client_work['mean'] * client_work['n'])} ms "
+                     f"across {client_work['n']} windows with this timer. Each value sums measured frame work within its window.")
     lines.append(f"Dropped sink records: {_fmt(cap.get('dropped'), 0)}. "
                  f"Total enqueue/sanitizing work: {_fmt(cap.get('processing_ms'))} ms; "
                  f"writer serialization/flush work: {_fmt(cap.get('write_ms'))} ms (background thread).")
