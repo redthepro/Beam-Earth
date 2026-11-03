@@ -2,12 +2,15 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
-## 1.8.3 (2026-11-02, Beam-Earth fork)
+## 1.8.3 (2026-11-03, Beam-Earth fork)
 
 - Keep canceled tile producers tracked until their writes finish, preventing pooled shape files from
   being reassigned and overwritten by a late old worker. Defer anchor pruning until producers finish.
 - Recheck restored game holds before allocating a free pooled slot after reconnect. The earlier
   disconnect-to-hello ownership gap remains open; automatic queue-timeout disconnects are deferred.
+- Give optional airport refresh a 20-second child-process budget before selecting the session's
+  snapshot and starting world workers. A stalled provider falls back to committed cached data or
+  temporarily disables runway grading instead of exhausting the launcher readiness deadline.
 - Add real-worker cancellation and slot-allocation regressions. Fix a Linux Steam-process
   test fixture so it verifies process identity instead of assuming the Python test runner is Steam.
 - Carry forward all startup/relaunch changes below. The local 1.8.2 candidate was not published.

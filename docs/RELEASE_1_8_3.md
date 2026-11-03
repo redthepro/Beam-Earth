@@ -19,6 +19,7 @@ BeamNG.drive is required and is not included. Steam should be running for normal
 - Limit installed BeamMP readiness waiting to 30 seconds, then stop the owned attempt and continue single-player. Use `--beammp-wait 120` for slower updates or `--no-beammp` to bypass it.
 - Clean up interrupted BeamMP starts, failed game launches and owned companion workers; improve Windows game-exit detection and process-handle cleanup.
 - Detect companion readiness from its fresh startup log without creating a fake game connection. Cancel and await the stream's event waiter on disconnect.
+- Bound optional airport refresh in a short-lived child process. A stalled provider falls back to the committed cache, or disables runway grading for that session when no cache exists. The child must exit before world workers start; it cannot change the snapshot in the background.
 - Normalize effective bridge-profile defaults in shared-plan provenance and reject pinned bundles in legacy compute helpers that cannot negotiate their identity.
 - Fix the Linux Steam-process test fixture and add real-worker cancellation and restored-slot allocation regressions.
 
