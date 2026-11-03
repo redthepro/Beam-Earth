@@ -2,7 +2,19 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
-## 1.8.2 (2026-11-02, Beam-Earth fork)
+## 1.8.3 (2026-11-02, Beam-Earth fork)
+
+- Keep canceled tile producers tracked until their writes finish, preventing pooled shape files from
+  being reassigned and overwritten by a late old worker. Defer anchor pruning until producers finish.
+- Recheck restored game holds before allocating a free pooled slot after reconnect. The earlier
+  disconnect-to-hello ownership gap remains open; automatic queue-timeout disconnects are deferred.
+- Add real-worker cancellation and slot-allocation regressions. Fix a Linux Steam-process
+  test fixture so it verifies process identity instead of assuming the Python test runner is Steam.
+- Carry forward all startup/relaunch changes below. The local 1.8.2 candidate was not published.
+- The observed native BeamNG crash is still under investigation. These verified fixes are not evidence
+  that every long-session crash or stutter is resolved; see `docs/STABILITY_VALIDATION.md`.
+
+## 1.8.2 candidate (2026-11-02, unpublished; included in 1.8.3)
 
 - Limit optional BeamMP startup to 30 seconds by default, display the wait and bypass option, and continue
   to single-player if it cannot become ready. `--beammp-wait` allows a longer wait; `--no-beammp` skips it.

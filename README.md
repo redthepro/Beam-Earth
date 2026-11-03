@@ -4,17 +4,21 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Release: 1.8.2 (see VERSION). Upstream runtime baseline: BeamNG.drive 0.40.4 on Linux (Vulkan) and 0.40.3 on the Steam Deck. See
+Release: 1.8.3 (see VERSION). Upstream runtime baseline: BeamNG.drive 0.40.4 on Linux (Vulkan) and 0.40.3 on the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
 **Modernization branch:** current changes, architecture, measured results and remaining work are tracked in
 [the foundation milestone](docs/MODERNIZATION.md) and [validation report](docs/MODERNIZATION_VALIDATION.md).
 These changes still require real BeamNG/BeamMP gameplay validation. Cross-platform build results are recorded
-with each release. Version 1.8.2 carries forward the opt-in [shared road-plan bundles](docs/SHARED_WORLD.md); this is a bounded
+with each release. Version 1.8.3 carries forward the opt-in [shared road-plan bundles](docs/SHARED_WORLD.md); this is a bounded
 prepared-data workflow, not full shared-world generation or the completed platform overhaul.
 The [platform status table](docs/PLATFORM_STATUS.md) distinguishes existing features, verified changes,
 experimental functionality and work still outstanding.
-Version 1.8.2 fixes startup waits and relaunch cleanup. If BeamMP cannot start, use `--no-beammp`
+Version 1.8.3 fixes canceled tile-worker file ownership and checks restored slot holds,
+alongside startup waits and relaunch cleanup. These are tested reliability fixes; resolution of the
+reported native game crash and reduced stuttering still need long-session runtime validation.
+See [stability evidence and acceptance](docs/STABILITY_VALIDATION.md).
+If BeamMP cannot start, use `--no-beammp`
 to launch single-player immediately; the normal BeamMP wait is now bounded to 30 seconds.
 See [startup and relaunch troubleshooting](docs/RELAUNCH_TROUBLESHOOTING.md) and the
 [previous release record](docs/RELEASE_1_8_1.md) for existing validation boundaries.

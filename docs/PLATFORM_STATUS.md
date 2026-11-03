@@ -1,10 +1,11 @@
-# Modernization target status — 1.8.1
+# Modernization target status — 1.8.3
 
 This tracks the requested platform scope. A release is not a claim that every target is complete.
 "Existing" means inherited upstream code, not a new feature or fresh engine validation in this initiative.
 
 | Target | Current evidence/status |
 |---|---|
+| Startup/relaunch reliability | Installed BeamMP startup has a configurable 30-second readiness limit and single-player fallback. Failed game startup and owned companion cleanup have regression coverage. Full live relaunch acceptance pending. |
 | Faster world loading | Range-cache duplicate request fixed; controlled race benchmark improved. Whole-world cold/warm loading speed not yet measured. |
 | Predictive world streaming | Existing speed/heading prediction, terrain preparation and GPS-route data prefetch. No new end-to-end driving claim. |
 | Smoother roads/geographic accuracy | Existing grading, junction/bridge/tunnel handling; new malformed-survey isolation and finite-coordinate fixes tested. Vehicle-response validation pending. |
@@ -19,8 +20,8 @@ This tracks the requested platform scope. A release is not a claim that every ta
 | SIMD/AVX2/AVX-512 | No new SIMD change. Existing native Rust kernels remain; stage profiling must justify runtime-dispatched acceleration. |
 | Multithreaded generation | Existing workers and native batching; retained. |
 | Network utilization/caching | Range integrity and lock-race fixes; immutable prepared road plans deduplicate content and support offline warm reuse. |
-| Reduced stuttering | Not measured in BeamNG during this initiative. |
-| Memory/resource management | Revisit descriptor lifecycle fixed; bundle reads, handlers, artifacts and storage budgets bounded. Long-session memory profiling pending. |
+| Reduced stuttering | Stutter and a native crash observed during a local 1.8.2 drive. No controlled before/after improvement established. |
+| Memory/resource management | Revisit descriptor lifecycle fixed; bundle resources bounded. Canceled tile producers retain file ownership until completion; free-slot allocation checks restored holds. Disconnect-gap ownership and stalled send-queue limits remain open. Launcher cleanup targets owned workers. Long-session runtime validation pending. |
 | Windows/Linux dedicated hosting | Earth plugin ZIP plus version-pinned official BeamMP Windows/Linux executable bundles, notices/source and empty-key configuration. AuthKey and actual hosting acceptance still required. |
 | Headless mode | Existing BeamMP dedicated server and Earth companion; new loopback road-plan cache commands in player executable. |
 | TUI/GUI administration | Full shared server-management interfaces not implemented. |
@@ -35,6 +36,7 @@ This tracks the requested platform scope. A release is not a claim that every ta
 | Error handling | Corrupt ranges, malformed surveys/packets, stale peer origins and incompatible/incomplete bundle failures covered. |
 | Reliable releases | Required quality gate, fork-specific updater, versioned player/host assets, digest validation and explicit release limitations. |
 
-See [shared road-plan operations](SHARED_WORLD.md), [foundation audit](MODERNIZATION.md), and
+See [stability evidence and acceptance](STABILITY_VALIDATION.md),
+[shared road-plan operations](SHARED_WORLD.md), [foundation audit](MODERNIZATION.md), and
 [foundation validation](MODERNIZATION_VALIDATION.md). Next acceptance priority is real client driving
 with pinned road plans and a larger measured region, then complete world-dependency manifests.
