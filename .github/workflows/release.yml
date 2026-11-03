@@ -1,7 +1,8 @@
 # The player downloads: BeamNG.Earth-<VERSION>-x86_64.AppImage (Linux) and BeamNG.Earth-<VERSION>.exe (Windows),
 # each the launcher (launcher.py: the mod, the world server, the game started for you) with Python inside.
-# A push to main whose VERSION has no release yet builds both and publishes the release v<VERSION> (a pre-release
-# when the version says "preview"); "Run workflow" builds them as artifacts only (or releases with release: true).
+# A push to main whose VERSION has no release yet builds both and stages a draft release v<VERSION>.
+# Finalize local player/source/checksum assets and verify them before publishing the draft. "Run workflow"
+# builds artifacts only (or stages a release with release: true). Development builds still publish automatically.
 # Every push to dev builds a development build, the GitHub pre-release v<VERSION>.dev.<run number> (the user,
 # 2026-10-30: "every push to dev would create a new pre-release"; VERSION itself only goes up with a beta): newer than
 # the beta it follows and older than the next (server/updates.py), with a warning that it is not thoroughly tested;
@@ -206,5 +207,5 @@ jobs:
           # Reviewed version-specific notes include known runtime limitations at first publication.
           release_notes="docs/RELEASE_$(printf '%s' "$v" | tr '.' '_').md"
           if [ -f "$release_notes" ]; then cp "$release_notes" notes.md; fi
-          gh release create "v$v" out/linux/* out/windows/* dist/BeamNG.Earth-BeamMP-Server-*.zip dist/BeamNG.Earth-Host-*.zip dist/BeamMP-Server-*-corresponding-source.zip --target "$GITHUB_SHA" --title "BeamNG.Earth $v" \
+          gh release create "v$v" out/linux/* out/windows/* dist/BeamNG.Earth-BeamMP-Server-*.zip dist/BeamNG.Earth-Host-*.zip dist/BeamMP-Server-*-corresponding-source.zip --target "$GITHUB_SHA" --title "BeamNG.Earth $v" --draft \
             --notes-file notes.md --generate-notes $pre
