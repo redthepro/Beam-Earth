@@ -3108,10 +3108,11 @@ class Server:
 
     def in_use(self):
         """(anchorId, key) of every tile a connection shows or holds, or let go of less than
-        prune_delay ago: after a far_swap / far_remove the mod still shows the tile until the
+        retired_keep ago: after a far_swap / far_remove the mod still shows the tile until the
         swap has run (its adds load within the governor budget, then a 0.5 s crossover) and
-        deletes it time-sliced, and a shape file must not vanish under a live TSStatic."""
+        deletes it time-sliced. Neither its shape nor its textures may vanish under a live TSStatic."""
         out = set()
+        held_slots = set()
         now = time.monotonic()
         for c in self.connections:
             out |= set(c.shown)
@@ -3122,6 +3123,14 @@ class Server:
             out |= {self.far_ck(c.active, k) for k in c.desired}
             out |= set(c.inflight)
             out |= {ck for ck, t in c.retired.items() if now - t < self.retired_keep}
+            held_slots.update(c.slot_holds)
+        if held_slots:
+            # Slots already protect pooled shapes from reuse; retain their tiles' DDS files too.
+            # A current-anchor or global object can outlive the retirement grace while its swap
+            # or deletion is queued. Only actual live holds pin it, until slotsGone releases them.
+            with self.matslots.lock:
+                held_tiles = {self.matslots.owner.get(n) for n in held_slots}
+            out.update(held_tiles.intersection(self.tiles))
         held = self.held_anchors()
         if held:
             out |= {ck for ck in self.tiles if ck[0] in held}

@@ -2,7 +2,9 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
+from concurrent.futures import Future
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import earthd  # noqa: E402
@@ -77,6 +79,7 @@ class PoolTest(unittest.TestCase):
 class Conn:
     def __init__(self):
         self.slot_holds, self.sent, self.desired, self.inflight, self.active = {}, {}, {}, {}, 1
+        self.shown, self.retired, self.held = {}, {}, set()
 
 
 class ServerTest(unittest.TestCase):
@@ -89,14 +92,71 @@ class ServerTest(unittest.TestCase):
         self.s.hm_pool.shutdown(wait=True)
         self.tmp.cleanup()
 
-    def add(self, key):
-        ck = (1, key)
+    def add(self, key, aid=1):
+        ck = (aid, key)
         name = self.s.matslots.take(ck)
         with open(os.path.join(self.s.out_dir, self.s.tile_name(*ck)), "wb") as fh:
             fh.write(b"head" + name.encode() + b"tail")
         self.s.tiles[ck] = earthd.TileInfo([0, 0, 0], 0.0, None, 0.0, None, 0, 0.0, name,
-                                           self.s.texture_name(1, key))
+                                           self.s.texture_name(aid, key))
         return ck, name
+
+    def held_texture_eviction(self, aid, key, rev=2):
+        """Real cache pressure must retain every DDS revision until all live slot holds end."""
+        self.s.tile_cache = 2
+        ck, name = self.add(key, aid)
+        info = self.s.tiles[ck]
+        info.rev = rev
+        info.texture = self.s.texture_name(*ck, info.rev)
+        info.shape = matslots.MatSlots.file(name)
+        slot = matslots.MatSlots.number(name)
+        paths = [os.path.join(self.s.out_dir, self.s.texture_name(*ck, r)) for r in range(rev + 1)]
+        paths.append(os.path.join(self.s.out_dir, self.s.tile_name(*ck)))
+        for path in paths:
+            with open(path, "wb") as fh:
+                fh.write(b"held tile data")
+        pooled_path = os.path.join(self.s.out_dir, info.shape)
+        matslots.place(paths[-1], pooled_path)
+        clients = [Conn(), Conn()]
+        for c, serial in zip(clients, (91, 92)):
+            c.s = self.s
+            c.slot_holds[slot] = serial
+            c.retired[ck] = time.monotonic() - self.s.retired_keep - 1
+            self.s.connections.add(c)
+        idle, _ = self.add("0_100_100")
+        idle_path = os.path.join(self.s.out_dir, self.s.tile_name(*idle))
+
+        def pressure(i):
+            new = (1, f"0_{200 + i}_200")
+            clients[0].desired = {new[1]: None}  # newly built tile must be sent, not evicted
+            fut = Future()
+            fut.set_result(earthd.TileInfo([0, 0, 0], 0, None, 0, None, 0, 0))
+            self.s._tile_done(new, fut)
+
+        pressure(0)
+        self.assertIn(ck, self.s.tiles)                  # failed before the held-DDS fix
+        self.assertTrue(all(os.path.isfile(path) for path in paths))
+        self.assertTrue(os.path.isfile(pooled_path))
+        self.assertNotIn(idle, self.s.tiles)             # unrelated idle tiles still evict
+        self.assertFalse(os.path.exists(idle_path))
+        earthd.Connection.slots_gone(clients[0], [[slot, 90]])  # stale serial cannot release it
+        pressure(1)
+        self.assertIn(ck, self.s.tiles)
+        earthd.Connection.slots_gone(clients[0], [[slot, 91]])
+        pressure(2)
+        self.assertIn(ck, self.s.tiles)                  # another connection still holds it
+        self.assertTrue(all(os.path.isfile(path) for path in paths))
+        earthd.Connection.slots_gone(clients[1], [[slot, 92]])
+        pressure(3)
+        self.assertNotIn(ck, self.s.tiles)               # no new retention after final release
+        self.assertTrue(all(not os.path.exists(path) for path in paths))
+        self.assertEqual(len(self.s.tiles), self.s.tile_cache)
+
+    def test_current_anchor_held_dds_survives_retirement_expiry(self):
+        self.held_texture_eviction(1, "0_0_0")
+
+    def test_global_held_dds_survives_retirement_expiry(self):
+        self.held_texture_eviction(earthd.GLOBAL_AID, "m14_4668_6297", rev=0)
 
     def test_idle_tiles_reclaimed_lru_first_and_reslotted(self):
         cks = [self.add(f"0_{i}_0") for i in range(matslots.TARGET + 20)]
