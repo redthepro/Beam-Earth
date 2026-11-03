@@ -117,3 +117,12 @@ with game/server logs. That launch had no new gameplay capture, so the earlier
 successful drive's telemetry cannot describe this crash. Native analysis is
 separate from this candidate's automated validation; no crash-resolution claim
 is made.
+
+Initial native analysis of that preserved primary dump matches the previously
+observed SFX3DWorld dispatch site: the game attempted to execute an address
+outside its loaded modules, with the return after the call at RVA `0x990043`.
+The relevant heap object/vtable was not captured, so its owner and a possible
+lifetime failure remain unproven. The log places the fault about 19 seconds
+after a rebase and 0.94 seconds after a terrain move; proximity in time alone
+does not establish causality. This is distinct from the earlier terrain-render
+crash signature.
