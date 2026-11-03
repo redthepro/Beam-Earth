@@ -16,6 +16,7 @@ MODULES = (
     "test_budget", "test_install", "test_updates", "test_selfupdate", "test_bmplaunch",
     "test_launcher_linux", "test_launcher_lifecycle", "test_process_lifecycle",
     "test_connection_cleanup", "test_telemetry", "test_telemetry_bridge", "test_telemetry_resources",
+    "test_diagnostics_package", "test_warm_ahead",
     "test_tile_ownership", "test_matslots", "test_airports", "test_airports_startup",
     "test_netfetch", "test_mapdata", "test_rangeread", "test_grading", "test_roadz", "test_roadz_inputs",
     "test_road_seams", "test_roadgeo", "test_fast", "test_restart",
