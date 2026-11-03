@@ -115,4 +115,40 @@ farfield.onTile({ type = 'far_tile', anchorId = 5, key = '2_3_4_c14_100_200', le
 local p = farfield._pending('2_3_4_c14_100_200')
 T.check(p and p.x1 == 3500.5 and p.y1 == 5120 and not p.global, 'a piece: footprint from its poly, an anchor tile')
 
+-- A retained global tile must use the incoming block's cover immediately. A
+-- same-origin resync can move the block too; no follow commit is guaranteed to
+-- arrive later to repair a hidden tile outside the new block (or one over it).
+for _, mode in ipairs({ 'terrain', 'detail' }) do
+  farfield.clear()
+  farfield.setNearVisual(mode)
+  local tx, ty = geotile.tileOf(LAT, LON, 18)
+  local la, lo = geotile.centre(18, tx, ty)
+  local a = geodesy.newAnchor(la, lo)
+  local k = 'm18_' .. tx .. '_' .. ty
+  local q = geotile.quad(a, 18, tx, ty)
+  farfield.switchAnchor(100, false, { cx = 0, cy = 0 }, 'cover', a)
+  farfield.onTile({ type = 'far_tile', anchorId = 100, key = k, level = 0,
+    shape = '/temp/beamngEarth/cover/slot_1.cdae', pos = { 0, 0, 0 }, err = 0.5,
+    frame = { la, lo }, state = 'group',
+    poly = { q[1][1], q[1][2], q[2][1], q[2][2], q[3][1], q[3][2], q[4][1], q[4][2] } })
+  farfield.onSwap({ type = 'far_swap', anchorId = 100, id = 1, add = { k }, remove = {} })
+  step()
+  local inst = farfield._tile(k)
+  local object = S.objects[inst.id]
+  local count = farfield.counters().imports
+  T.check(inst.cover == 'interior' and object.hidden, mode .. ': global tile starts covered')
+
+  farfield.transform(a:transformTo(a), a)
+  farfield.switchAnchor(101, true, { cx = 10000, cy = 0 }, 'cover', a)
+  T.check(farfield._tile(k) == inst and inst.cover == 'none' and not object.hidden,
+    mode .. ': retained global tile uncovered in switch frame, without a later block commit')
+
+  farfield.transform(a:transformTo(a), a)
+  farfield.switchAnchor(102, true, { cx = 0, cy = 0 }, 'cover', a)
+  T.check(farfield._tile(k) == inst and inst.cover == 'interior' and object.hidden,
+    mode .. ': retained global tile covered in switch frame, without a later block commit')
+  T.check(farfield.counters().imports == count and not inst.doomed and farfield.stats().old == 0,
+    mode .. ': cover changes retain the same imported global object')
+end
+
 T.done('farglobal')

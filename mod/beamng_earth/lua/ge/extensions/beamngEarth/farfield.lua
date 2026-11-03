@@ -1163,6 +1163,10 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
       if inst.prefetch then pT = pT + 1; preQ[pT] = inst else mT = mT + 1; mainQ[mT] = inst end
     end
   end
+  -- Both retained globals and previous-anchor tiles now use the incoming
+  -- block. Applying global cover first leaves its old hide/sink state until
+  -- a later terrain-follow commit, which may never arrive after a resync.
+  if blk then setBlock(blk.cx, blk.cy) end
   for _, inst in pairs(globals) do applyCover(inst, false) end
   groups, activeGroups, moving = {}, 0, {}
   removals, rH, rT = keep, 1, #keep
@@ -1173,7 +1177,6 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession, newAnchor)
   end
   doneReceived = false
   if blk then
-    setBlock(blk.cx, blk.cy)
     for _, inst in pairs(old) do applyCover(inst, false) end
   end
 end
