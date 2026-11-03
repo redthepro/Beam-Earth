@@ -328,6 +328,8 @@ HM_BUSY_TILE_WORKERS = 1    # far tiles built at once while a physics block is b
                             # Deck's far field time, blocks building nearly all the time while driving, 2026-10-20)
 WARM_STEPS_S = (0.0, 10.0, 20.0, 30.0)   # s ahead on the player's straight path whose road cells are planned early
 WARM_AROUND = 2000.0        # m: and every cell this close to the player (any heading)
+WARM_MAX_M = 12000.0        # cap speculative targets, not gameplay velocity; keep the full 30 s horizon up to
+                            # 400 m/s (including fast flight). Extreme finite pose speeds otherwise warm continents.
 PREFETCH_START = 200.0      # m (Chebyshev) from the block centre before prefetching
 # A fast player (FAST_BASE_V) gets the chain of its next PREFETCH_CHAIN blocks prefetched, PREFETCH_PARALLEL at once: at
 # 500 mph the next block was asked for ~1.3 s before it was needed and took 0.5-3 s, so the game held its car for its
@@ -588,6 +590,24 @@ def _num(msg, name, default=None):
     if not math.isfinite(v):
         raise ValueError(f"{name} is not finite")
     return v
+
+
+def warm_points(x, y, vx, vy):
+    """Near-first road/imagery warm targets, bounded in distance without changing the reported pose.
+
+    Uniformly shorten the prediction horizon beyond WARM_MAX_M. Ordinary driving and fast flight retain
+    their existing time samples; even an extreme finite velocity cannot send speculative work continents away.
+    """
+    if not math.isfinite(vx) or not math.isfinite(vy):
+        raise ValueError("warm velocity is not finite")
+    limit = WARM_MAX_M / WARM_STEPS_S[-1]
+    if math.hypot(vx, vy) > limit:
+        # Normalize before multiplying: finite components can still overflow their combined magnitude.
+        scale = max(abs(vx), abs(vy))
+        ux, uy = vx / scale, vy / scale
+        k = limit / math.hypot(ux, uy)
+        vx, vy = ux * k, uy * k
+    return [(x + vx * t, y + vy * t) for t in WARM_STEPS_S]
 
 
 def survey_q(frame, dem, block_m=BLOCK_SURVEY_M):
@@ -1843,14 +1863,14 @@ class Server:
 
     def warm_roads(self, anchor, x, y, vx, vy):
         """Queue the road plans of the cells the physics block will cover along the player's straight path
-        (WARM_STEPS_S; the block's half width + the grading pad), then those within WARM_AROUND."""
+        (WARM_STEPS_S, at most WARM_MAX_M; the block's half width + grading pad), then within WARM_AROUND."""
         g = self.grader_for(anchor)
         if g is None:
             return
         reach = self.layout.block * heightmap.SQUARE / 2 + gradingmod.T_MAX + 40.0
         keys = []
-        for t, r in [(t, reach) for t in WARM_STEPS_S] + [(0.0, WARM_AROUND)]:
-            la, lo, _ = anchor.frame.enu_to_geodetic(x + vx * t, y + vy * t, 0.0)
+        for px, py, r in [(px, py, reach) for px, py in warm_points(x, y, vx, vy)] + [(x, y, WARM_AROUND)]:
+            la, lo, _ = anchor.frame.enu_to_geodetic(px, py, 0.0)
             la, lo = float(la), float(lo)
             dlat = r / 111320.0
             dlon = r / (111320.0 * max(0.05, math.cos(math.radians(la))))
@@ -1920,12 +1940,12 @@ class Server:
         self.ahead_pool.submit(run)
 
     def warm_imagery(self, anchor, x, y, vx, vy):
-        """The lazy imagery sources (NAIP) along the player's straight path (WARM_STEPS_S), over the block's
+        """Lazy imagery (NAIP) along the straight path (WARM_STEPS_S, at most WARM_MAX_M), over the block's
         footprint and a margin, at the base photo's texel size: fetched before the blocks there are built."""
         if self.imagery is None:
             return
         reach = self.layout.block * heightmap.SQUARE / 2 + IMG_WARM_MARGIN
-        pts = [(x + vx * t, y + vy * t) for t in WARM_STEPS_S]
+        pts = warm_points(x, y, vx, vy)
         self.imagery.warm(anchor.frame, pts, reach, self.layout.block * heightmap.SQUARE / BASE_RENDER_PX)
 
     def _warm_loop(self):
