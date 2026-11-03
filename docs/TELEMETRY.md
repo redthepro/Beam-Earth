@@ -130,6 +130,21 @@ or proof of an audio-engine crash cause.
 
 ## Repeatable I-95 comparison
 
+The next candidate separates `gasstations` from the `roads` frame timer. In
+dev.1/dev.2, `roads` included both updates, so an old road-stage hitch does not
+identify which one was expensive. While capture is active, `road_anchor`,
+`road_ghosts`, `road_orphans`, `road_delete_chunk`, `road_held`,
+`road_collide_range`, `road_walks`, `road_far`, and `road_collision` reuse the
+road module's existing wall-clock stage timers. They are subdivisions of
+`roads`: do not add them to the parent total. Recording them adds no physics
+queries or scene scans. These fields narrow attribution on a future run; they
+cannot recover missing detail from an older capture.
+
+The combined sea/trees/ambience stage is now named `sea_trees`. Its previous
+`sea+trees` label was rejected by the capture's timer-key filter, so it appeared
+in performance logs but was absent from captured timer maps. The allowed-key
+filter remains strict; the producer now uses a valid name.
+
 Record two passes of the same Virginia section, one in each direction, with the
 same car, graphics settings and target speed. At 240 MPH, the car covers about
 107 m/s, so five seconds of road lead is about 536 m. Begin capture before the

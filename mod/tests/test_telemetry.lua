@@ -19,13 +19,16 @@ T.near(row.frame.wall_ms, 1000, 1e-6, 'actual interval sum')
 T.near(row.frame.sim_wall_ratio, 1, 1e-6, 'observed sim time against actual wall time')
 T.check(row.frame.histogram[5] == 100 and #row.frame.histogram == 19, 'fixed histogram count')
 T.check(row.frame.p99_ms == 12 and row.mod_ms.roads == 200, 'histogram upper bound and summed mod timings')
-local marks, eng = { terrainCommit = 120 }, { RenderShadows = 160 }
+local marks, eng = { terrainCommit = 120, roads = 20, road_walks = 15, gasstations = 3, sea_trees = 8 }, { RenderShadows = 160 }
 frame(200, 0.1, marks, { engine = eng })
 marks.terrainCommit, eng.RenderShadows = 9999, 9999
 for i = 1, 8 do row = frame(100, 0) end
 T.check(row.frame.frames == 9 and row.frame.over_100 == 1 and row.frame.over_50 == 9, 'hitch counts include all frames')
 T.check(row.worst.ms == 200 and row.worst.mod_ms.terrainCommit == 120 and row.worst.engine_ms.RenderShadows == 160,
   'worst hitch preserves that frame instead of aliasing mutable timer tables')
+T.check(row.worst.mod_ms.road_walks == 15 and row.worst.mod_ms.gasstations == 3
+  and row.mod_ms.road_walks == 15 and row.worst.mod_ms.sea_trees == 8,
+  'road subdivisions, gas-station and vegetation work survive window and hitch capture')
 T.check(row.worst.context.speed_mps == 107.2896 and row.context.full, 'hitch context and full end-of-window context')
 T.check(row.frame.paused_frames == 8, 'paused frames remain explicit')
 T.near(row.frame.sim_wall_ratio, 0.1, 1e-6, 'pause / physics slowdown is not hidden')

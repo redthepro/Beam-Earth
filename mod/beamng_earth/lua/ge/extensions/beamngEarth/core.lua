@@ -112,6 +112,9 @@ local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players'
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 local perflog = require('beamngEarth/perflog')         -- hitches and frame-rate drops into server.log (perflog.lua)
 M._telemetry = require('beamngEarth/telemetry')       -- fields avoid the Lua chunk's 200-local limit
+M._telemetryRoadSteps = { anchor = 'road_anchor', ghosts = 'road_ghosts', orphans = 'road_orphans',
+  ['deletes+chunks'] = 'road_delete_chunk', held = 'road_held', collideRange = 'road_collide_range',
+  walks = 'road_walks', far = 'road_far', collision = 'road_collision' }
 function M._clearTelemetryContext()
   M._telemetryLastContext, M._telemetryContextAt, M._telemetryContextWallAt = nil, nil, nil
 end
@@ -2232,8 +2235,14 @@ local function onUpdate(dtReal, dtSim)
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
     roads.update(gov, st.anchorId, st.player, M.viewAway(), st.anchor)
-    gasstations.update(gov)
     t = mark('roads', t)
+    if M._telemetry.isActive() then
+      -- Reuse existing wall timers; no scene scans or per-object instrumentation.
+      -- These are subdivisions of roads, not additional costs to sum with it.
+      for source, key in pairs(M._telemetryRoadSteps) do marks[key] = roads.steps[source] end
+    end
+    gasstations.update(gov)
+    t = mark('gasstations', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
     sea.update(st.anchorId, st.player)
@@ -2244,7 +2253,7 @@ local function onUpdate(dtReal, dtSim)
     pcall(ambience.update, st.anchorId, sea)      -- (sound never stops the world's updates)
     pcall(pumpjacks.update)
     pcall(nightlights.update)
-    t = mark('sea+trees', t)
+    t = mark('sea_trees', t) -- telemetry timer keys allow letters, digits and underscores
     local pb = nil
     if st.block then
       pb = st.parkBox or {}
