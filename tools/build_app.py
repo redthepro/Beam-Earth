@@ -65,7 +65,7 @@ def win_version(ver):
         digits = "".join(c for c in part if c.isdigit())
         nums.append(min(int(digits or 0), 65535))
     nums += [0] * (3 - len(nums))
-    m = re.search(r"\.dev\.(\d+)$", ver)
+    m = re.search(r"[.-]dev\.(\d+)$", ver)
     return tuple(nums + [min(int(m.group(1)), 65535) if m else 0])
 
 

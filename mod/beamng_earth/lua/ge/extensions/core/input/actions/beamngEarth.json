@@ -1,4 +1,12 @@
 {
+"beamngEarth_telemetryMarker": {
+"cat": "debug",
+"order": 94,
+"ctx": "tlua",
+"onDown": "if beamngEarth_core and beamngEarth_core.telemetryStatus().active then beamngEarth_core.telemetryControl('marker') end",
+"title": "BeamNG.Earth: mark a telemetry issue",
+"desc": "Adds a timestamp to an active telemetry capture without pausing the drive (Ctrl+Shift+T). Start capture in Esc, BeamNG.Earth, Telemetry first."
+},
 "beamngEarth_devToggle": {
 "cat": "debug",
 "order": 90,

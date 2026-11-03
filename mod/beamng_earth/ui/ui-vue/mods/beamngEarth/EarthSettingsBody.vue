@@ -6,6 +6,30 @@
     <BngCardHeading>{{ category.name }}</BngCardHeading>
     <div v-if="category.intro" class="earth-intro">{{ category.intro }}</div>
 
+    <template v-if="category.telemetry">
+      <BngRow><template #label>Capture status</template>
+        <span class="earth-value">{{ telemetry.active ? 'Recording' : (telemetry.status || 'Stopped') }}
+          <template v-if="telemetry.samples != null"> · {{ telemetry.samples }} samples</template>
+          <template v-if="telemetry.dropped"> · {{ telemetry.dropped }} dropped</template>
+        </span>
+      </BngRow>
+      <BngRow><template #label>Include route coordinates</template>
+        <BngSwitch :modelValue="telemetryCoordinates" :disabled="telemetry.active" @update:modelValue="setTelemetryCoordinates" />
+      </BngRow>
+      <div class="earth-note">Coordinates help compare repeated I-95 runs, but reveal where you drove. They are excluded by default. No microphone, screenshots or account credentials are captured.</div>
+      <div class="earth-inline">
+        <BngButton :accent="ACCENTS.main" :disabled="!telemetry.available || telemetry.active" @click="captureAction('start')">Start capture</BngButton>
+        <BngButton :accent="ACCENTS.outlined" :disabled="!telemetry.active" @click="captureAction('marker')">Mark an issue</BngButton>
+        <BngButton :accent="ACCENTS.outlined" :disabled="!telemetry.active" @click="captureAction('stop')">Stop capture</BngButton>
+      </div>
+      <div v-if="!telemetry.available" class="earth-note">Connect to a companion app with telemetry support to start a capture.</div>
+      <div v-if="telemetry.session" class="earth-note">Session: {{ telemetry.session }}</div>
+      <div v-if="telemetry.error" class="earth-note is-error">{{ telemetry.error }}</div>
+      <div class="earth-note">{{ telemetryMessage }}</div>
+      <div class="earth-note">Records frame-time histograms, worst hitches, speed, Lua memory and world-loading queues about once a second. Straight-line road readiness is an estimate, not a guarantee of collision coverage. Pause-menu time remains visible in the capture.</div>
+      <div class="earth-note">Press Ctrl+Shift+T while driving to mark a stutter without opening this page. Stop after reproducing the issue. The companion's telemetry folder keeps bounded session files, including samples written before a game crash. Reconnecting requires starting a new capture.</div>
+    </template>
+
     <!-- Quality presets: one press sets every setting below; changing one makes it Custom -->
     <template v-if="category.presets">
       <div class="earth-presets">
@@ -123,6 +147,7 @@ import {
   cacheConfirm, cacheBusy, cacheResult, pathText, pathBusy, pathPick, pathMsg,
   setQuality, presetName, valueOf, selectOption, onSwitchChange, onSliderChange, onNumberEnter, onDevChange, infoValue,
   openFeedback,
+  telemetry, telemetryCoordinates, telemetryMessage, captureAction, setTelemetryCoordinates,
   confirmClearCache, askClearCache, usePath, sendPath, pathNote, typing, applyDevPreset,
 } from "./earthSettingsStore.js"
 

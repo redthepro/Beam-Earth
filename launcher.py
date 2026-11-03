@@ -1199,6 +1199,9 @@ def beammp_wait_seconds(value):
 
 def main():
     ensure_ca_certs()
+    if len(sys.argv) > 1 and sys.argv[1] == "--inspect-capture":
+        from tools import inspect_capture
+        raise SystemExit(inspect_capture.main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--world-cache":
         from tools import world_cache
         raise SystemExit(world_cache.main(sys.argv[2:]))
@@ -1420,6 +1423,9 @@ def run(args):
     import install
     title(f"BeamNG.Earth {install.version()}")
     support_notice()
+    if "-dev." in install.version():
+        row("Telemetry", "opt-in: Esc > BeamNG.Earth > Telemetry > Start capture")
+        row("Captures", os.path.join(data_dir(), "telemetry"))
     wine = under_wine()
     build = "native"
     if args.user_dir:

@@ -50,6 +50,9 @@ jobs:
             case "$v" in *-*) v="$v.dev.${{ github.run_number }}";; *) v="$v-dev.${{ github.run_number }}";; esac
             dev=true
           fi
+          # An explicitly versioned diagnostic build is always a prerelease,
+          # including workflow_dispatch on an isolated release branch.
+          case "$v" in *-dev.*|*.dev.*) dev=true;; esac
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "dev=$dev" >> "$GITHUB_OUTPUT"
           if gh release view "v$v" >/dev/null 2>&1; then exists=1; else exists=0; fi

@@ -108,6 +108,7 @@ local mpsession = require('beamngEarth/mpsession')     -- BeamMP sessions (the p
 local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players' positions into our frame (PR #88)
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 local perflog = require('beamngEarth/perflog')         -- hitches and frame-rate drops into server.log (perflog.lua)
+M._telemetry = require('beamngEarth/telemetry')       -- fields avoid the Lua chunk's 200-local limit
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -899,6 +900,7 @@ local function onMessage(msg)
       readySet = 1 })      -- (it takes a built block near its target: follow.preferReady, 'terrain_ready_set')
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
+    M._telemetry.disconnected()
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
     cacheInfo = nil
     st.serverNote, st.serverNoteDetail, st.terrainErrorAt = nil, nil, nil
@@ -908,6 +910,8 @@ local function onMessage(msg)
     trees.clear()
     ambience.clear()
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
+  elseif t == 'telemetry_status' then
+    M._telemetry.setStatus(msg)
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
     st.refreshLater = nil       -- (a restarted server numbers its anchors from 1 again)
@@ -1934,6 +1938,74 @@ local function perfContext()
     st.terrainLatency and string.format(', last block %.1fs', st.terrainLatency) or '')
   return c
 end
+
+-- Low-cost state on a hitch, fuller streaming counts once a second. The road probe
+-- follows velocity in a straight line, not the route; a bend can leave it before the
+-- car does. It measures imported tiles/colliders, not guaranteed driveable surface.
+function M._telemetryContext(full)
+  local c = {}
+  for k, v in pairs(M._telemetryLastContext or {}) do c[k] = v end
+  c.queues_age_s = M._telemetryContextAt and math.max(0, st.clock - M._telemetryContextAt) or nil
+  local p, b = st.player, st.block
+  local speed = p and math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2) or 0
+  c.speed_mps, c.lua_mb = speed, collectgarbage('count') / 1024
+  c.connected, c.active, c.paused = net.isConnected(), st.inOurLevel and st.active or false, st.paused == true
+  c.rebasing, c.ground_held = st.rebasing ~= nil, dropHold.active == true
+  c.edge_held = st.guard and st.guard.pausedByUs == true or false
+  c.ground_ready = b ~= nil and st.placeFrames == nil and not c.ground_held
+  c.server_backlog, c.terrain_last_s = st.serverBacklog, st.terrainLatency
+  c.terrain_wait_s = st.terrainPending and st.terrainPending.sentAt and math.max(0, st.clock - st.terrainPending.sentAt) or 0
+  c.follow_count, c.rebase_count = st.followCount, st.rebaseCount
+  c.net_pending_frames = net.pendingFrames()
+  c.lat, c.lon = nil, nil
+  if p and M._telemetry.status().include_location == true then c.lat, c.lon = p.lat, p.lon end
+  c.block_edge_m, c.block_edge_s = nil, nil
+  if p and b then
+    local x0, y0, x1, y1 = lattice.groundBox(b.cx, b.cy)
+    local edge = math.min(p.x - x0, x1 - p.x, p.y - y0, y1 - p.y)
+    if speed > 1 and edge >= 0 then
+      local hx, hy = (p.vx or 0) / speed, (p.vy or 0) / speed
+      edge = math.min(hx > 0 and (x1 - p.x) / hx or hx < 0 and (x0 - p.x) / hx or math.huge,
+        hy > 0 and (y1 - p.y) / hy or hy < 0 and (y0 - p.y) / hy or math.huge)
+      c.block_edge_s = edge / speed
+    end
+    c.block_edge_m = math.max(0, edge)
+  end
+  if full then
+    local f, r, tr = farfield.stats(), roads.status(), trees.status()
+    c.far_loaded, c.far_queued, c.far_pending = f.live, f.queued, f.groups
+    c.far_old, c.far_materials = (f.old or 0) + (f.deleting or 0), f.materials
+    c.roads_loaded, c.roads_queued, c.colliders_queued = r.tiles, r.queued, r.walksQueued
+    c.roads_solid_around = r.solidAround
+    c.trees_loaded, c.trees_pending, c.trees_items, c.trees_errors = tr.tiles, tr.pending, tr.items, tr.errors
+    c.road_ahead_m, c.road_ahead_s = nil, nil
+    c.road_probe_m, c.road_probe_step_m, c.road_probe_limited = 2000, 32, false
+    if p and speed > 1 then
+      local distance, limited = 2000, true
+      for _, tile in ipairs(roads.ahead(p.x, p.y, (p.vx or 0) / speed, (p.vy or 0) / speed, 2000)) do
+        if tile.arrived == false or not tile.road or (tile.col ~= 'none' and tile.col ~= 'solid') then
+          distance, limited = math.max(0, tile.d - 32), false
+          break
+        end
+      end
+      c.road_ahead_m, c.road_ahead_s, c.road_probe_limited = distance, distance / speed, limited
+    end
+    c.queues_age_s, M._telemetryContextAt = 0, st.clock
+    M._telemetryLastContext = c
+  end
+  return c
+end
+
+function M.telemetryStatus() return M._telemetry.status() end
+function M.telemetryControl(action, includeLocation)
+  if action ~= 'start' and action ~= 'stop' and action ~= 'marker' and action ~= 'status' then
+    return false, 'unknown capture action'
+  end
+  if action == 'stop' then M._telemetry.stopLocal('Stopping capture...') end
+  if not net.isConnected() then return false, 'companion app not connected' end
+  if action == 'start' then M._telemetry.startRequested() end
+  return net.send({ type = 'telemetry_control', action = action, include_location = includeLocation == true })
+end
 local machineSent = false       -- the machine's lines sent to this server connection
 local machineTryAt = nil
 local function perfMachine()
@@ -2000,12 +2072,22 @@ local function onUpdate(dtReal, dtSim)
     local okH, h = pcall(noteHitch, frameMs0)
     if okH then hrec = h end
   end
+  if M._telemetry.isActive() then
+    M._telemetryStart = hitchClock()
+    local ok, err = pcall(M._telemetry.frame, frameMs0, marks, hrec, M._telemetryContext, perfEngine, net.sendTelemetry)
+    if not ok then
+      M.telemetryControl('stop')
+      log('W', 'beamngEarth', 'telemetry stopped: ' .. tostring(err))
+    end
+    M._telemetryCostMs = hitchClock() - M._telemetryStart
+  else M._telemetryCostMs = 0 end
   if st.inOurLevel and not st.paused then
     local okP, errP = pcall(perfFrame, frameMs0, hrec)
     if not okP then log('W', 'beamngEarth', 'perf log: ' .. tostring(errP)) end
   end
   prevMarks, marks = marks, prevMarks
   for k in pairs(marks) do marks[k] = nil end
+  if M._telemetry.isActive() then marks.telemetry = M._telemetryCostMs end
   local t = hitchClock()
   postfx.update(st.inOurLevel)
   require('beamngEarth/enginepref').update(st.inOurLevel)      -- (the settings' object detail: our level only)
@@ -2158,6 +2240,7 @@ M._devbuild = require('beamngEarth/devbuild')    -- the development build's noti
 M._pacer = require('beamngEarth/framepacer')    -- even frame pacing (fields: the main chunk's 200-local limit)
 M._paceClock = stopwatch.clock()
 local function onPreRender(dtReal, dtSim)
+  M._telemetry.simulation(dtSim)
   -- even frame pacing (framepacer.lua): our level, playing (not paused, not loading), not BeamMP, the setting on
   local now = M._paceClock()
   if M._paceLast then

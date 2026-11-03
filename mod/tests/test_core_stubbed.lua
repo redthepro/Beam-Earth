@@ -831,8 +831,51 @@ do -- the window gets its view only while it is shown: it is hidden by default (
   T.check(#views == 1 and type(views[1].connection) == 'string', 'shown window: its view built')
   ui.draw, ui.visible = draw, vis0
 end
+do -- normal gameplay capture: actual core / settings / socket wiring, no MCP or harness driving
+  serverSend({ type = 'telemetry_status', available = true, active = false })
+  frames(3)
+  T.check(core.telemetryStatus().available and not core.telemetryStatus().active, 'telemetry advertised by companion')
+  T.check(core.telemetryControl('start', false) and last('telemetry_control').action == 'start', 'capture start reaches companion')
+  serverSend({ type = 'telemetry_status', available = true, active = true, session = 'capture-a', include_location = false })
+  local vel0 = veh.vel
+  veh.vel = vec3(107.2896, 0, 0)
+  frames(25)
+  local sample = last('telemetry_sample')
+  T.check(sample and sample.frame.frames == 20 and sample.context.speed_mps == 0,
+    'core produces one-second frame windows; no anchor has no invented vehicle speed')
+  T.check(sample and sample.context.lat == nil and sample.context.lon == nil,
+    'capture omits coordinates unless specifically enabled')
+  local state = core._state()
+  local player0, block0 = state.player, state.block
+  state.player = { x = 0, y = 0, vx = 107.2896, vy = 0, lat = 38, lon = -77 }
+  state.block = { cx = 0, cy = 0 }
+  local ctx = core._telemetryContext(true)
+  T.check(ctx.road_probe_m == 2000 and ctx.road_probe_step_m == 32 and type(ctx.road_ahead_m) == 'number'
+    and ctx.speed_mps > 107 and ctx.block_edge_s > 0, '240 mph context reports bounded road / collider probe and terrain edge time')
+  T.check(ctx.lat == nil and ctx.lon == nil, 'coordinate opt-out applies even with a player location')
+  state.player, state.block = player0, block0
+  T.check(sample and type(sample.context.far_loaded) == 'number' and type(sample.context.trees_pending) == 'number',
+    'capture includes real module queue counters')
+  T.check(sample and sample.mod_ms.telemetry ~= nil, 'capture measures its own work in frame marks')
+  core.telemetryControl('marker')
+  T.check(last('telemetry_control').action == 'marker', 'issue marker reaches companion')
+  local count = #received('telemetry_sample')
+  core.telemetryControl('stop')
+  frames(25)
+  T.check(#received('telemetry_sample') == count and not core.telemetryStatus().active, 'local stop stops sampling before acknowledgement')
+  core.telemetryControl('start', true)
+  serverSend({ type = 'telemetry_status', available = true, active = true, session = 'capture-b', include_location = true })
+  frames(25)
+  sample = last('telemetry_sample')
+  state.player = { x = 0, y = 0, vx = 0, vy = 0, lat = 38, lon = -77 }
+  ctx = core._telemetryContext(false)
+  T.check(sample and sample.seq == 1 and ctx.lat == 38 and ctx.lon == -77, 'new coordinate-enabled capture starts a new sequence')
+  state.player = player0
+  veh.vel = vel0
+end
 core.reconnect()
 T.check(core.cacheState() == nil and not core.cacheClear(), 'disconnected: numbers gone, no request sent')
+T.check(not core.telemetryStatus().active and not core.telemetryStatus().available, 'disconnect stops capture and clears availability')
 beamngEarth_settings = nil
 
 core.onExtensionUnloaded()

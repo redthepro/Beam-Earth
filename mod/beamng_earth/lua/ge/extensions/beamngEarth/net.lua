@@ -156,6 +156,20 @@ function M.send(msg)
   return true
 end
 
+-- Capture is best effort: never add another sample behind a blocked socket. Normal
+-- gameplay messages and disconnect semantics are unchanged. At most one bounded
+-- capture frame can remain in this queue, and sequence gaps identify dropped windows.
+function M.sendTelemetry(msg)
+  if state ~= 'connected' or #outQueue > 0 then return false end
+  local data = framing.encode(jsonEncode(msg))
+  if #data > 32768 then return false end
+  outQueue[1] = data
+  flush()
+  return state == 'connected'
+end
+
+function M.pendingFrames() return #outQueue end
+
 function M.state() return state end
 function M.isConnected() return state == 'connected' end
 function M.attempts() return attempts end

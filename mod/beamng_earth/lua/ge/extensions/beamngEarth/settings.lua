@@ -567,6 +567,7 @@ function M.uiState()
     -- the connection banner's state line { id, level, text, guard } (docs/ROADMAP.md "Robustness" 1)
     banner = core and core.banner and core.banner() or nil,
     update = core and core.updateInfo and core.updateInfo() or nil,  -- a newer version on GitHub
+    telemetry = core and core.telemetryStatus and core.telemetryStatus() or nil,
   }
   -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')
@@ -595,6 +596,13 @@ function M.uiState()
 end
 
 function M.uiSet(key, v) return M.set(key, v) end
+
+function M.uiTelemetry(action, includeLocation)
+  local core = ext('beamngEarth_core')
+  if not (core and core.telemetryControl) then return { ok = false, error = 'mod not loaded' } end
+  local sent, why = core.telemetryControl(action, includeLocation == true)
+  return { ok = sent == true, error = not sent and (why or 'companion app not connected') or nil }
+end
 
 function M.uiReset()
   values = defaults()

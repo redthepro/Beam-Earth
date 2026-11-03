@@ -655,6 +655,7 @@ class Server:
         self.lod_px = farfield.SSE_TAU_PX   # screen-space LOD: the largest split pop allowed on screen (px; 0: off)
         self.update_check = False       # ask GitHub for a newer version after a hello (main_async turns it on; tests
                                         # never reach GitHub: its small daily budget ran out over a day of test runs)
+        self.telemetry = None          # opt-in capture, attached by main_async; absent in worker/test servers
         os.makedirs(self.out_dir, exist_ok=True)
         open(os.path.join(self.out_dir, SESSION_MARKER), "w").close()
         if far_format not in farfield.FORMATS:
@@ -4060,6 +4061,8 @@ class Connection:
             log.warning("client %s: %s", self.peer, e)
         finally:
             self.route_dl_version += 1          # (a running route_download stops: no one to show its bar to)
+            if getattr(self.s, "telemetry", None) is not None:
+                self.s.telemetry.disconnected(self)
             self.s.connections.discard(self)
             self.s.slots_let_go(list(self.slot_holds))
             self.slot_holds = {}
@@ -4227,6 +4230,8 @@ class Connection:
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
+            if getattr(self.s, "telemetry", None) is not None:
+                self.s.telemetry.status(self)
             if self.gravity.msg is not None:        # ... and its gravity
                 self.send(self.gravity.msg)
             if self.credits.msg is not None:        # ... and the data credits
@@ -4291,6 +4296,9 @@ class Connection:
             self.on_cache(msg)
         elif kind == "app_path":                # the settings page's folders: the cache's, the BeamMP launcher's
             self.spawn(self.app_path(msg))
+        elif kind in ("telemetry_control", "telemetry_sample"):
+            if getattr(self.s, "telemetry", None) is not None:
+                self.s.telemetry.dispatch(self, msg)
         elif kind == "perf_log":                # the mod's performance log (perflog.lua): its hitches, frame-rate drops,
             # minute lines and the machine, into this log beside the blocks' own timings (the file players send)
             lines = msg.get("lines")
@@ -5859,6 +5867,12 @@ async def main_async(args):
             log.warning("map tiles off: %s", e)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
+    import telemetry as telemetrymod
+    import telemetry_bridge
+    import apppaths
+    server.telemetry = telemetry_bridge.Bridge(server, telemetrymod.CaptureManager(
+        args.telemetry_dir or os.path.join(apppaths.data_dir(), "telemetry"), updatesmod.local_version()))
+    capture_task = asyncio.create_task(server.telemetry.run())
     port = srv.sockets[0].getsockname()[1]
     print(f"earthd listening on 127.0.0.1:{port} session {server.sid} -> {server.out_dir} "
           f"(far tiles: {fmt}, near visual: {server.near_visual}, cells: {server.layout.cells} "
@@ -5875,6 +5889,9 @@ async def main_async(args):
         async with srv:
             await srv.serve_forever()
     finally:
+        capture_task.cancel()
+        await asyncio.gather(capture_task, return_exceptions=True)
+        await asyncio.to_thread(server.telemetry.close)
         ticker.cancel()
         lagger.cancel()
         sweeper.cancel()
@@ -6067,6 +6084,8 @@ def main():
     home = os.path.expanduser("~")
     ap = argparse.ArgumentParser(description="BeamNG.Earth companion server")
     ap.add_argument("--port", type=int, default=47613, help="TCP port on 127.0.0.1 (0 = any free port)")
+    ap.add_argument("--telemetry-dir", metavar="PATH",
+                    help="local opt-in telemetry recordings (default: the launcher's data folder/telemetry)")
     ap.add_argument("--user-dir", default=(os.path.join(os.environ.get("LOCALAPPDATA", home), "BeamNG", "BeamNG.drive",
                                                      "current") if sys.platform == "win32"
                                         else os.path.join(home, ".local/share/BeamNG/BeamNG.drive/current")),

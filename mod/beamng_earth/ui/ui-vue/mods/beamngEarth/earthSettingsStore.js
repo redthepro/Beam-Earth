@@ -87,6 +87,12 @@ export const settingsSchema = [
     ],
   },
   {
+    name: "Telemetry",
+    intro: "Record a driving session to investigate stutters, slow world loading and crashes. Capture is optional and stays on this computer; nothing is uploaded.",
+    telemetry: true,
+    items: [],
+  },
+  {
     name: "Feedback",
     items: [
       { id: "reportOpen", type: "feedback", what: "report", label: "Report", name: "Report an issue or idea", desc: "Closes this page, takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md). Also Ctrl+Shift+E while driving." },
@@ -133,7 +139,7 @@ export const settingsSchema = [
 // Each page's icon (the pause menu's side buttons take the icon's name, LayoutMenu's tabs the icon) and its button id
 // (the first keeps the old Mods-tab button's id: settings.lua M.BUTTON_ID, pageExists)
 export const PAGE_ICONS = { Graphics: "eyeOutlineOpened", World: "globe", Interface: "cogOutline",
-  Multiplayer: "peopleOutline", Storage: "floppyDisk", Feedback: "bug", About: "info", Developer: "code" }
+  Multiplayer: "peopleOutline", Storage: "floppyDisk", Telemetry: "bug", Feedback: "bug", About: "info", Developer: "code" }
 export const pageId = (name, i) => i === 0 ? "beamngEarth-settings" : "beamngEarth-settings-" + name.toLowerCase()
 
 // The quality presets' cards (settings.lua PRESETS: what each sets)
@@ -155,6 +161,19 @@ export const devPresets = [
 
 export const config = ref({})
 export const status = ref({})
+export const telemetryCoordinates = ref(false)
+export const telemetryMessage = ref("")
+export const telemetry = computed(() => status.value.telemetry || { available: false, active: false })
+export function setTelemetryCoordinates(value) {
+  if (!telemetry.value.active) telemetryCoordinates.value = value === true
+}
+export function captureAction(action) {
+  telemetryMessage.value = ""
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiTelemetry(${JSON.stringify(action)}, ${telemetryCoordinates.value ? "true" : "false"}) or nil`, res => {
+    if (!res || !res.ok) telemetryMessage.value = (res && res.error) || "Mod not loaded"
+    else telemetryMessage.value = action === "marker" ? "Issue marker requested" : "Request sent"
+  })
+}
 export const dev = ref({ on: {}, lastPreset: "lod", active: false })
 export const help = ref(null)          // the setting pointed at (the side card's help)
 export const cacheConfirm = ref(false) // Clear cache: the confirmation is showing
