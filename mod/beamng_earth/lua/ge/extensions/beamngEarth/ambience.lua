@@ -338,6 +338,34 @@ M.POINTS = { [4] = M.PORTAL_EVENT, [5] = WC .. 'Refinery_Tower_Engines', [6] = W
 M.POINT_VOLUME = { [8] = 0.35 }
 local spaces = {}       -- road tile key -> { { id, row }, ... }
 M.spacesMade = 0
+-- Managed streamed sound objects only (not room tone, rain, or core audio).
+-- Cumulative counters; live is the tracked count, reconciled when a missing
+-- object is observed during normal work. No scene scan on telemetry reads.
+local spaceCounts = { created = 0, deleted = 0, moved = 0, replaced = 0, live = 0 }
+
+function M.spaceStats()
+  return { created = spaceCounts.created, deleted = spaceCounts.deleted, moved = spaceCounts.moved,
+    replaced = spaceCounts.replaced, live = spaceCounts.live }
+end
+
+local function spaceRows(flat)
+  local rows = {}
+  if type(flat) ~= 'table' then return rows end
+  for i = 1, #flat - 7, 8 do
+    if M.SPACES[flat[i]] or M.POINTS[flat[i]] then
+      rows[#rows + 1] = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3],
+        flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+    end
+  end
+  return rows
+end
+
+local function spaceObject(s)
+  if not s.id then return nil end
+  local o = scenetree.findObjectById(s.id)
+  if not o then s.id = nil; spaceCounts.live = spaceCounts.live - 1 end
+  return o
+end
 
 local function placeSpace(o, r)
   if M.POINTS[r[1]] then o:setPosition(vec3(r[2], r[3], r[4])); return end
@@ -350,10 +378,10 @@ end
 
 -- A road tile's sound spaces (roads.lua onTile: data.sound, its flat rows).
 function M.onSpaces(key, flat)
+  local replacing = spaces[key] ~= nil
   M.dropSpaces(key)
   local list = {}
-  for i = 1, #flat - 7, 8 do
-    local r = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+  for _, r in ipairs(spaceRows(flat)) do
     local amb = M.SPACES[r[1]]
     local ev = M.POINTS[r[1]]
     local o = (amb or ev) and Sim.upcast(createObject(ev and 'SFXEmitter' or 'SFXSpace'))
@@ -373,6 +401,10 @@ function M.onSpaces(key, flat)
       end
       list[#list + 1] = { id = o:getId(), row = r }
       M.spacesMade = M.spacesMade + 1
+      spaceCounts.created, spaceCounts.live = spaceCounts.created + 1, spaceCounts.live + 1
+      -- Objects created to replace an already tracked tile, including recovery
+      -- after its engine objects disappeared. Not a claim about native lifetime.
+      if replacing then spaceCounts.replaced = spaceCounts.replaced + 1 end
     end
   end
   spaces[key] = list
@@ -380,22 +412,35 @@ end
 
 -- The tile goes (roads.lua dropTile).
 -- A road geotile's spaces placed again (roads.lua M.replace: the rows mapped into the new anchor's world): moved where
--- the count is the same, made again else.
+-- the count and kinds are the same, made again else. A same-sized replacement
+-- can change tunnel ambience or turn an SFXSpace into a point SFXEmitter.
 function M.placeSpaces(key, flat)
   local list = spaces[key]
-  if not list or type(flat) ~= 'table' or #list ~= math.floor(#flat / 8) then return M.onSpaces(key, flat) end
+  local rows = spaceRows(flat)
+  if not list or #list ~= #rows then return M.onSpaces(key, flat) end
+  local objects = {}
+  -- Validate the whole set before moving anything: a missing object or changed
+  -- kind must not leave half the tile remapped and the other half stale.
   for k, s in ipairs(list) do
-    local i = (k - 1) * 8 + 1
-    s.row = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
-    local o = scenetree.findObjectById(s.id)
-    if o then placeSpace(o, s.row) end
+    if s.row[1] ~= rows[k][1] then return M.onSpaces(key, flat) end
+    objects[k] = spaceObject(s)
+    if not objects[k] then return M.onSpaces(key, flat) end
+  end
+  for k, s in ipairs(list) do
+    s.row = rows[k]
+    placeSpace(objects[k], s.row)
+    spaceCounts.moved = spaceCounts.moved + 1
   end
 end
 
 function M.dropSpaces(key)
   for _, s in ipairs(spaces[key] or {}) do
-    local o = scenetree.findObjectById(s.id)
-    if o then o:delete() end
+    local o = spaceObject(s)
+    if o then
+      o:delete()
+      s.id = nil
+      spaceCounts.deleted, spaceCounts.live = spaceCounts.deleted + 1, spaceCounts.live - 1
+    end
   end
   spaces[key] = nil
 end
@@ -407,8 +452,8 @@ moveSpaces = function(xf)
       local x, y, z = xf:apply(r[2], r[3], r[4])
       local ax, ay = xf:apply(r[2] + math.cos(r[8]), r[3] + math.sin(r[8]), r[4])
       r[2], r[3], r[4], r[8] = x, y, z, math.atan2(ay - y, ax - x)
-      local o = scenetree.findObjectById(s.id)
-      if o then placeSpace(o, r) end
+      local o = spaceObject(s)
+      if o then placeSpace(o, r); spaceCounts.moved = spaceCounts.moved + 1 end
     end
   end
 end

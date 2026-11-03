@@ -162,6 +162,94 @@ T.check(pe and pe.playing and pe.pos.x == 3 and pe.pos.z == 5, 'a portal: the st
 amb.dropSpaces('1:5_5')
 T.check(not scenetree.findObjectById(pe.id), 'and gone with its tile')
 
+do -- Same-count remaps must preserve the sound kind, not only the object's position.
+  local function row(kind, x) return { kind, x, 10, 5, 20, 10, 8, 0 } end
+  local function tracked(class)
+    local out = {}
+    for _, o in ipairs(S.liveOf(class)) do
+      if o.name and o.name:match('^bngEarthSpace_') then out[#out + 1] = o end
+    end
+    table.sort(out, function(a, b) return a.id < b.id end)
+    return out
+  end
+  T.check(amb.spaceStats().live == 0, 'streamed sound live count excludes the room tone and other core audio')
+  amb.onSpaces('remap', row(0, 0))
+  local tunnel, before = tracked('SFXSpace')[1], amb.spaceStats()
+  amb.placeSpaces('remap', row(0, 25))
+  local after = amb.spaceStats()
+  T.check(tracked('SFXSpace')[1] == tunnel and tunnel.xf.pos.x == 25 and amb.inTunnel(25, 10, 5),
+    'same-kind remap keeps the object and updates geometry consumers')
+  T.check(after.created == before.created and after.deleted == before.deleted and after.replaced == before.replaced
+    and after.moved == before.moved + 1 and after.live == 1, 'same-kind remap adds no creation/deletion churn')
+
+  amb.placeSpaces('remap', row(1, 40))
+  local bridge = tracked('SFXSpace')[1]
+  after = amb.spaceStats()
+  T.check(bridge.id ~= tunnel.id and not S.objects[tunnel.id] and bridge.fields.soundAmbience == amb.SPACES[1]
+    and not amb.inTunnel(40, 10, 5), 'same-count tunnel to bridge replaces stale ambience and roof semantics')
+  T.check(after.created == before.created + 1 and after.deleted == before.deleted + 1
+    and after.replaced == before.replaced + 1 and after.live == 1, 'replacement records actual create/delete operations')
+
+  amb.placeSpaces('remap', row(4, 50))
+  local portal = tracked('SFXEmitter')[1]
+  T.check(#tracked('SFXSpace') == 0 and not S.objects[bridge.id] and portal.playing
+    and portal.fields.track == amb.PORTAL_EVENT and portal.pos.x == 50, 'space to point remap creates a playing emitter')
+  amb.placeSpaces('remap', row(8, 60))
+  local plant = tracked('SFXEmitter')[1]
+  T.check(plant.id ~= portal.id and not S.objects[portal.id] and plant.fields.track == amb.POINTS[8]
+    and plant.vol == amb.POINT_VOLUME[8], 'point kind change updates event and volume, despite unchanged row count')
+  amb.placeSpaces('remap', row(2, 70))
+  local arch = tracked('SFXSpace')[1]
+  T.check(#tracked('SFXEmitter') == 0 and arch.fields.soundAmbience == amb.SPACES[2]
+    and amb.inTunnel(70, 10, 5) and #amb.tunnelLights() > 0, 'point to space restores the correct class and roof rows')
+
+  before = amb.spaceStats()
+  arch:delete() -- engine/external disappearance is not a deletion performed by this module
+  amb.placeSpaces('remap', row(2, 80))
+  local recovered = tracked('SFXSpace')[1]
+  after = amb.spaceStats()
+  T.check(recovered and recovered.id ~= arch.id and recovered.xf.pos.x == 80 and after.live == 1,
+    'same-kind remap recreates a missing engine object instead of silently losing sound')
+  T.check(after.created == before.created + 1 and after.replaced == before.replaced + 1
+    and after.deleted == before.deleted, 'missing-object recovery does not invent a native delete')
+
+  before = amb.spaceStats()
+  local flat = row(99, 900) -- ignored/unsupported row must not misalign the supported rows
+  for _, v0 in ipairs(row(2, 90)) do flat[#flat + 1] = v0 end
+  amb.placeSpaces('remap', flat)
+  after = amb.spaceStats()
+  T.check(tracked('SFXSpace')[1] == recovered and recovered.xf.pos.x == 90 and amb.inTunnel(90, 10, 5)
+    and after.created == before.created and after.deleted == before.deleted,
+    'unknown rows neither shift a supported sound row nor cause needless replacement')
+  before = after
+  amb.transform({ apply = function(_, x, y, z) return x + 10, y, z or 0 end })
+  after = amb.spaceStats()
+  T.check(recovered.xf.pos.x == 100 and amb.inTunnel(100, 10, 5) and after.moved == before.moved + 1,
+    'rebase updates current rows and counts actual managed placements')
+
+  flat = row(2, 110)
+  for _, v0 in ipairs(row(1, 150)) do flat[#flat + 1] = v0 end
+  amb.placeSpaces('remap', flat)
+  local pair = tracked('SFXSpace')
+  T.check(#pair == 2 and amb.spaceStats().live == 2, 'count-changing replacement tracks both fresh objects')
+  pair[2]:delete()
+  before = amb.spaceStats()
+  flat[2], flat[10] = 120, 160
+  amb.placeSpaces('remap', flat)
+  after = amb.spaceStats()
+  T.check(after.moved == before.moved and after.created == before.created + 2
+    and after.deleted == before.deleted + 1 and after.live == 2,
+    'whole-set validation avoids a partial remap when a later object is missing')
+  T.check(amb.inTunnel(120, 10, 5) and not amb.inTunnel(160, 10, 5), 'replacement rows remain correctly typed and located')
+  amb.dropSpaces('remap')
+  before = amb.spaceStats()
+  amb.dropSpaces('remap')
+  after = amb.spaceStats()
+  T.check(after.live == 0 and after.deleted == before.deleted, 'repeated drops do not double-count deletes')
+  after.live = 99
+  T.check(amb.spaceStats().live == 0, 'telemetry snapshot cannot mutate lifecycle counters')
+end
+
 -- shores: a "Waves" ribbon along a shoreline near the listener, SHORE_W wide, with the rivers
 seaV.shores = function() return { S1 = { kind = 'sea', nodes = { { 0, -30, 0 }, { 40, -30, 0 } } } }, 3 end
 seaV.riversVersion = 9
