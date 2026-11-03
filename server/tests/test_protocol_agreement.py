@@ -334,6 +334,7 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
+                       "telemetry_status",                          # opt-in capture: AgreementTableTest below
                        "roads_skin", "roads_exact",                  # road geotiles (test_roadgeo)
                        "terrain_refresh",                            # a provisional first block: --grading (map data)
                        "update_status",                              # the player's "Update now" (test_selfupdate)
@@ -443,6 +444,25 @@ def lua_function(text, name):
 
 
 class AgreementTableTest(unittest.TestCase):
+    def test_capture_status_matches_table(self):
+        import tempfile
+        import telemetry
+        import telemetry_bridge
+        with tempfile.TemporaryDirectory() as directory:
+            capture = telemetry.CaptureManager(directory, "1.8.4-dev.1")
+            sent = []
+            try:
+                bridge = telemetry_bridge.Bridge(types.SimpleNamespace(), capture)
+                bridge.status(types.SimpleNamespace(send=sent.append))
+                message = sent[0]
+                self.assertEqual(message.pop("type"), "telemetry_status")
+                spec = SERVER_TO_MOD["telemetry_status"]
+                self.assertEqual(set(message), set(spec))
+                for field, (kind, _) in spec.items():
+                    self.assertIsInstance(message[field], kind, field)
+            finally:
+                capture.close()
+
     def test_mod_sends_match_table(self):
         sends = mod_sends()
         self.assertEqual(set(sends), set(MOD_TO_SERVER), "message types the mod sends")
