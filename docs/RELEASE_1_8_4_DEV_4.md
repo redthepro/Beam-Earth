@@ -83,3 +83,37 @@ capture before driving and mark a visible disappearance with Ctrl+Shift+T.
 Include any reset/recovery activity in the description. Native crash resolution,
 gameplay performance gains, Linux execution and a full multiplayer drive remain
 unverified. Local validation/build results are recorded below after completion.
+
+## Local validation and delivery
+
+The foundation gate passed: 45 Python modules, 703 cases (683 passed and 20
+explicit platform/data skips), all 76 Lua modules, Node checks, four Rust tests,
+and source/BeamMP package creation. The exact native binary used in the frozen
+download separately passed 52 grading/native-wrapper tests.
+
+The Windows executable was compiled locally from
+`ef4067cf635222d13c30a202ef2d25f5b4235b6d` in an isolated packaging checkout.
+Verified native/build inputs and the source-built bootloader were reused; native
+source was unchanged. The tracked native binary was restored afterwards.
+
+Frozen validation checked PE and embedded versions, ten Lua files against source,
+generated dev metadata, native digest, frozen server/telemetry/analyzer code, and
+required archive contents. Server help and capture analysis exited successfully;
+the frozen/source analyzer outputs matched for the preserved dev.3 capture.
+The existing optional DuckDB experimental-module collection warning remains;
+current project source does not use that optional module.
+
+`BeamNG.Earth-1.8.4-dev.4.exe`: 57,300,021 bytes.
+
+SHA-256: `ea2662362776fbc1b202d5302da17b8f1cb6e70621a4b7a0a137a5b99660c37e`.
+
+A copy with the same hash was delivered to the test user's Downloads folder.
+The candidate has not been installed or published to GitHub. Stable v1.8.3 and
+the published dev.1 prerelease are unchanged.
+
+While validation finished, the user experienced another crash in the installed
+dev.3 build. Its primary minidump and report were preserved locally, together
+with game/server logs. That launch had no new gameplay capture, so the earlier
+successful drive's telemetry cannot describe this crash. Native analysis is
+separate from this candidate's automated validation; no crash-resolution claim
+is made.
