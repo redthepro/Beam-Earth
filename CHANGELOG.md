@@ -2,6 +2,24 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.8.2 (2026-11-02, Beam-Earth fork)
+
+- Limit optional BeamMP startup to 30 seconds by default, display the wait and bypass option, and continue
+  to single-player if it cannot become ready. `--beammp-wait` allows a longer wait; `--no-beammp` skips it.
+- Read BeamMP's current native Windows log as well as redirected output, with bounded reads.
+- Clean up interrupted multiplayer startup, canceled game launches and failed companions. Wait for the
+  companion to listen before starting the game. Reap owned child processes after forced shutdown.
+- Reduce Windows game-exit grace to three seconds and ignore confirmed CEF helper processes; retain
+  Linux's longer Steam/container handoff grace. Use typed Windows parent-watcher handles and close them.
+- Include launcher regressions and isolated real Windows process-tree/port-release tests in release gates.
+- Read readiness from the companion's startup log instead of opening a fake game connection; cancel and
+  await the stream's event waiter when a client disconnects so it does not leave an orphaned async task.
+- Normalize effective bridge-profile defaults in shared-plan provenance, and reject pinned bundles in
+  legacy compute helpers that cannot negotiate bundle identity. Both upstream PR review findings have
+  regression tests. Shared road-plan bundles remain experimental and disabled by default.
+- This release addresses launcher reliability; it does not claim a fix for native BeamNG crashes or
+  successful multiplayer connections when the external BeamMP launcher cannot finish starting.
+
 ## 1.8.1 (2026-11-02, Beam-Earth fork)
 
 - Bump the published version from 1.7.4-beta to 1.8.1 and rebuild the player and hosting packages. The pending 1.8.0 publication was cancelled.
