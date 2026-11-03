@@ -365,8 +365,13 @@ farBefore = {}
 for _, o in ipairs(S.liveOf('TSStatic')) do farBefore[o.id] = o:getPosition() end
 local orbitOld = { orbit.camLastPos2.x, orbit.camLastPos2.y, orbit.camLastPos2.z }
 local camOld = { camData.pos.x, camData.pos.y, camData.pos.z }
+core._telemetryContext(true) -- queue/road observations in the previous world origin
 frame()
 local fN = frameNo
+T.check(core._telemetryLastContext == nil and core._telemetryContextWallAt == nil,
+  'rebase commit discards queue and road observations from the old world origin')
+T.check(core._telemetryContext(false).player_frame_current == false,
+  'same-frame rebase invalidates the player snapshot taken before the world moved')
 T.check(calls.setClusterPosRelRot > clusterMoves, 'rebase: vehicles moved')
 local a2 = geodesy.newAnchor(req2.lat, req2.lon)
 local xf = a1:worldTransformTo(a2, 10000, 10, 1200)
@@ -440,6 +445,11 @@ T.check(pumpUntil(function() return (calls.delete_TSStatic or 0) == nOld + 1 end
 T.check(calls.createObject_TSStatic == created + 1, 'stale far tile ignored')
 
 -- terrain-follow continues in the new frame
+do
+  local after = core._telemetryContext(false)
+  T.check(after.player_frame_current and after.road_ahead_m == nil and after.queues_age_wall_s == nil,
+    'new-frame player does not resurrect old-frame road lead before a fresh full probe')
+end
 local nPrep = #received('prepare_terrain')
 veh.pos = vec3(lc.x + 300, lc.y, lc.z) -- ~590 m: > 300 m from the block centre 256
 T.check(pumpUntil(function() return #received('prepare_terrain') > nPrep end, 5), 'terrain-follow in the new frame')
@@ -836,7 +846,12 @@ do -- normal gameplay capture: actual core / settings / socket wiring, no MCP or
   frames(3)
   T.check(core.telemetryStatus().available and not core.telemetryStatus().active, 'telemetry advertised by companion')
   T.check(core.telemetryControl('start', false) and last('telemetry_control').action == 'start', 'capture start reaches companion')
+  core._telemetryLastContext = { trees_pending = 999999 }
+  core._telemetryContextAt, core._telemetryContextWallAt = 0, 0
   serverSend({ type = 'telemetry_status', available = true, active = true, session = 'capture-a', include_location = false })
+  frames(1)
+  T.check(core._telemetryLastContext == nil and core._telemetryContextAt == nil and core._telemetryContextWallAt == nil,
+    'capture start clears prior session queue observations before the first full sample')
   local vel0 = veh.vel
   veh.vel = vec3(107.2896, 0, 0)
   frames(25)
@@ -847,12 +862,46 @@ do -- normal gameplay capture: actual core / settings / socket wiring, no MCP or
     'capture omits coordinates unless specifically enabled')
   local state = core._state()
   local player0, block0 = state.player, state.block
-  state.player = { x = 0, y = 0, vx = 107.2896, vy = 0, lat = 38, lon = -77 }
+  state.player = { x = 0, y = 0, vx = 107.2896, vy = 0, vz = -12.5, lat = 38, lon = -77 }
   state.block = { cx = 0, cy = 0 }
+  local wall0, pending0, guard0 = core._telemetryClock, state.terrainPending, state.guard
+  local wallNow = 10000
+  core._telemetryClock = function() return wallNow end
+  state.terrainPending = { sentAt = state.clock, sentWallAt = 2000, ready = true }
+  state.guard = { mode = 'air', holds = 2, rescues = 1 }
   local ctx = core._telemetryContext(true)
   T.check(ctx.road_probe_m == 1984 and ctx.road_probe_step_m == 32 and type(ctx.road_ahead_m) == 'number'
     and ctx.speed_mps > 107 and ctx.block_edge_s > 0, '240 mph context reports bounded road / collider probe and terrain edge time')
   T.check(ctx.lat == nil and ctx.lon == nil, 'coordinate opt-out applies even with a player location')
+  T.check(type(ctx.audio_spaces_live) == 'number' and type(ctx.audio_spaces_created) == 'number'
+    and type(ctx.audio_spaces_deleted) == 'number' and type(ctx.audio_spaces_moved) == 'number'
+    and type(ctx.audio_spaces_replaced) == 'number', 'capture includes bounded sound-object lifecycle counters')
+  T.check(ctx.vertical_speed_mps == -12.5 and ctx.block_inside and ctx.block_outside_m == 0
+    and ctx.guard_mode == 4 and ctx.guard_holds == 2 and ctx.guard_rescues == 1,
+    'signed vertical motion, actual block membership and guard decisions are observable without coordinates')
+  T.check(ctx.terrain_wait_wall_s == 8 and ctx.terrain_wait_s == 0 and ctx.terrain_pending_ready,
+    'diagnostic wall request age remains separate from the unchanged scheduling clock')
+  wallNow = wallNow + 2500 -- stalled render: no dtReal advance
+  ctx = core._telemetryContext(false)
+  T.check(ctx.queues_age_wall_s == 2.5 and ctx.queues_age_s == 0 and ctx.terrain_wait_wall_s == 10.5,
+    'a stall advances monotonic observation ages even when engine dtReal does not advance')
+  local _, _, edgeX = require('beamngEarth/lattice').groundBox(0, 0)
+  state.player.x = edgeX + 30
+  ctx = core._telemetryContext(false)
+  T.check(ctx.block_inside == false and ctx.block_outside_m == 30 and ctx.block_edge_m == 0
+    and ctx.block_edge_s == nil, 'outside terrain is explicit even though legacy edge distance clamps to zero')
+  local anchor0 = state.anchor
+  state.anchor = {} -- origin changed after updatePlayer; the cached position is in the old frame
+  ctx = core._telemetryContext(true)
+  T.check(ctx.player_frame_current == false and ctx.block_inside == nil and ctx.block_edge_m == nil
+    and ctx.road_ahead_m == nil and ctx.road_ahead_s == nil,
+    'a world rebase never reports false zero lead by comparing old position with new terrain')
+  state.anchor = anchor0
+  state.player, state.block, state.terrainPending = nil, nil, nil
+  ctx = core._telemetryContext(false)
+  T.check(ctx.vertical_speed_mps == nil and ctx.block_inside == nil and ctx.block_outside_m == nil
+    and ctx.terrain_wait_wall_s == 0, 'absent player/block clears cached motion and bounds instead of inventing values')
+  core._telemetryClock, state.terrainPending, state.guard = wall0, pending0, guard0
   state.player, state.block = player0, block0
   T.check(sample and type(sample.context.far_loaded) == 'number' and type(sample.context.trees_pending) == 'number',
     'capture includes real module queue counters')
@@ -879,6 +928,8 @@ T.check(not core.telemetryStatus().active and not core.telemetryStatus().availab
 beamngEarth_settings = nil
 
 core.onExtensionUnloaded()
+T.check(core._telemetryLastContext == nil and core._telemetryContextWallAt == nil,
+  'level reset does not carry old world queue counters into the next level')
 T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance == 100000,
   'unload: the level keeps running with its own sky and the 100 km view distance')
 T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unload')

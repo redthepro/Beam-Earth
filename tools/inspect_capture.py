@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 from telemetry import HISTOGRAM_MS, REASONS, clean_client, clean_server  # noqa: E402
 
 MAX_LINE = 64 * 1024
+MPH_PER_MPS = 2.236936
+SPEED_OUTLIER_MPH = 1000.0  # Diagnostic exclusion only; keep the original measurements.
 
 
 def _finite(value):
@@ -49,6 +51,7 @@ def inspect(path):
            "elapsed_s": 0.0, "frame_wall_s": 0.0, "frames": 0, "max_frame_ms": 0.0,
            "over_33": 0, "over_50": 0, "over_100": 0, "paused_frames": 0,
            "histogram": [0] * len(HISTOGRAM_MS), "high_speed_wall_s": 0.0, "high_speed_partial_pause_windows": 0,
+           "reported_speed_outlier_windows": 0, "speed_outlier_threshold_mph": SPEED_OUTLIER_MPH,
            "context": {}, "server": {}, "resources": {}, "client_work": {}, "markers": [], "worst_windows": [],
            "capture": {}, "coordinates_recorded": False, "resource_discovery_failures": 0,
            "resource_partial_groups": 0, "game_resource_missing": 0}
@@ -115,7 +118,17 @@ def inspect(path):
                     out[key] += frame.get(key, 0)
                 out["histogram"] = [a + b for a, b in zip(out["histogram"], frame["histogram"])]
                 context = client["context"]
-                if (context.get("speed_mps", 0) * 2.236936 >= 200
+                worst = client.get("worst") or {}
+                hitch_context = worst.get("context") or context
+                speed_mph = context.get("speed_mps", 0) * MPH_PER_MPS
+                hitch_speed_mph = hitch_context["speed_mps"] * MPH_PER_MPS if "speed_mps" in hitch_context else None
+                # A reset/teleport can leave an extreme velocity in either observation. Count the window once,
+                # including fully paused windows, and retain the reported values in the normal statistics.
+                speed_outlier = (speed_mph > SPEED_OUTLIER_MPH
+                                 or (_finite(hitch_speed_mph) and hitch_speed_mph > SPEED_OUTLIER_MPH))
+                if speed_outlier:
+                    out["reported_speed_outlier_windows"] += 1
+                if (200 <= speed_mph <= SPEED_OUTLIER_MPH and not speed_outlier
                         and frame.get("paused_frames", 0) < frame["frames"]):
                     out["high_speed_wall_s"] += frame["wall_ms"] / 1000
                     if frame.get("paused_frames", 0) > 0:
@@ -126,13 +139,13 @@ def inspect(path):
                 # core emits a sum of per-frame capture timings in each sample window;
                 # it does not emit context.telemetry_ms or a single previous-frame time.
                 _range(out["client_work"], "telemetry_ms_per_window", client["mod_ms"].get("telemetry"))
-                worst = client.get("worst") or {}
-                hitch_context = worst.get("context") or context
                 window = {"received_elapsed_s": elapsed, "max_ms": frame.get("max_ms", 0),
-                          "speed_mph": hitch_context["speed_mps"] * 2.236936 if "speed_mps" in hitch_context else None,
+                          "speed_mph": hitch_speed_mph,
+                          "reported_speed_outlier": speed_outlier,
                           "road_ahead_s": hitch_context.get("road_ahead_s"),
                           "road_probe_limited": hitch_context.get("road_probe_limited"),
                           "queues_age_s": hitch_context.get("queues_age_s"),
+                          "queues_age_wall_s": hitch_context.get("queues_age_wall_s"),
                           "server_backlog": hitch_context.get("server_backlog"),
                           "mod_ms": worst.get("mod_ms", {}), "engine_ms": worst.get("engine_ms", {})}
                 out["worst_windows"].append(window)
@@ -186,12 +199,20 @@ def render(report):
              f"Histogram upper-bound p50/p95/p99: {_fmt(r['p50_ms'])}/{_fmt(r['p95_ms'])}/{_fmt(r['p99_ms'])} ms. "
              "Percentiles combine frame counts, not averages of per-second percentiles.",
              f"Frames over 33.4/50/100 ms: {r['over_33']}/{r['over_50']}/{r['over_100']}; "
-             f"paused frames: {r['paused_frames']}. Reported 200+ MPH window exposure: {_fmt(r['high_speed_wall_s'])} s (estimate). "
+             f"paused frames: {r['paused_frames']}. Qualified reported 200+ MPH window exposure: {_fmt(r['high_speed_wall_s'])} s (estimate). "
              f"Fully paused windows are excluded; {r['high_speed_partial_pause_windows']} partially paused windows count their whole measured duration. "
-             "A window's reported velocity does not prove that speed throughout the window.", ""]
+             "A window's reported velocity does not prove that speed throughout the window.",
+             f"Diagnostic speed outlier windows: {r['reported_speed_outlier_windows']} with reported speed above "
+             f"{_fmt(r['speed_outlier_threshold_mph'], 0)} MPH in the window-end or worst-frame observation. "
+             "They are excluded from qualified 200+ MPH exposure, whether paused or unpaused. "
+             "This is a diagnostic threshold, not a game speed limit; raw reported values remain in the statistics.", ""]
     lines += ["## Streaming and memory", ""]
-    for key, label, units in (("speed_mps", "Speed", "m/s"), ("road_ahead_s", "Straight-ahead ready road horizon", "s"),
+    for key, label, units in (("speed_mps", "Reported speed (raw)", "m/s"), ("road_ahead_s", "Straight-ahead ready road horizon", "s"),
+                              ("vertical_speed_mps", "Vertical velocity (positive up)", "m/s"),
+                              ("block_outside_m", "Distance outside terrain bounds (largest axis)", "m"),
                               ("block_edge_s", "Time to current terrain edge", "s"),
+                              ("terrain_wait_wall_s", "Pending terrain request wall age (includes ready waiting for commit)", "s"),
+                              ("terrain_last_wall_s", "Last terrain response wall latency", "s"),
                               ("server_backlog", "Server tile backlog", "tiles"),
                               ("trees_pending", "Pending trees", "items"), ("lua_mb", "Lua heap", "MiB"),
                               ("sim_wall_ratio", "Simulation/wall ratio (includes paused intervals)", "")):
@@ -225,9 +246,13 @@ def render(report):
             lead += " s (probe limit reached)"
         else:
             lead += " s"
+        wall_age = item.get("queues_age_wall_s")
+        age = (f"{_fmt(wall_age)} wall-clock s" if wall_age is not None else
+               f"{_fmt(item['queues_age_s'])} engine-clock s (may undercount stalls)")
+        anomaly = " (window contains a diagnostic speed outlier)" if item.get("reported_speed_outlier") else ""
         lines.append(f"- Window received at t={_fmt(item['received_elapsed_s'])} s: worst frame {_fmt(item['max_ms'])} ms, "
-                     f"{_fmt(item['speed_mph'])} MPH, road ahead {lead}, "
-                     f"queue observation {_fmt(item['queues_age_s'])} s old; "
+                     f"reported {_fmt(item['speed_mph'])} MPH{anomaly}, road ahead {lead}, "
+                     f"queue observation {age} old; "
                      f"mod timers: {top(item['mod_ms'])}; engine timers: {top(item['engine_ms'])}.")
     lines += ["", "Timers are correlated measurements, not a diagnosis of what caused a hitch.", "", "## Capture overhead and gaps", ""]
     cap = r["capture"]

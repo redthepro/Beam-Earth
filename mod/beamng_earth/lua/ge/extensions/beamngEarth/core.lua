@@ -58,6 +58,9 @@ local lattice = require('beamngEarth/lattice')
 local governor = require('beamngEarth/governor')
 local camshift = require('beamngEarth/camshift')
 local stopwatch = require('beamngEarth/stopwatch')
+-- Diagnostic wall ages must not use the engine's smoothed/capped dtReal clock.
+-- Keep the scheduling clock unchanged; this clock only describes observations.
+M._telemetryClock = stopwatch.clock()
 local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
@@ -109,6 +112,9 @@ local mpanchor = require('beamngEarth/mpanchor')       -- BeamMP: other players'
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 local perflog = require('beamngEarth/perflog')         -- hitches and frame-rate drops into server.log (perflog.lua)
 M._telemetry = require('beamngEarth/telemetry')       -- fields avoid the Lua chunk's 200-local limit
+function M._clearTelemetryContext()
+  M._telemetryLastContext, M._telemetryContextAt, M._telemetryContextWallAt = nil, nil, nil
+end
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -165,6 +171,8 @@ local cacheClears = 0         -- answers to a clear so far (the settings page wa
 
 local function resetState()
   loadprogress.reset()
+  M._clearTelemetryContext()
+  M._telemetryPlayerAnchor = nil
   st = {
     inOurLevel = false,
     active = false,          -- world logic running (rebase, far field, sky, pose)
@@ -558,6 +566,7 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  M._clearTelemetryContext()
   trees.reanchor(st.anchor)       -- (the geotiles it has: placed into the new world; the server drops the far ones)
   roads.replace(st.anchor, msg.anchorId)     -- (road geotiles too: roads.lua)
   st.anchorSession, st.resync = st.sessionId, false
@@ -605,6 +614,7 @@ local function finishRebase()
   roads.collisionRebuilt()      -- (the moved colliders are solid: no second rebuild up to RELOAD_EVERY_S later)
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
+  M._clearTelemetryContext()
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(st.anchor.lat, st.anchor.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -911,7 +921,10 @@ local function onMessage(msg)
     ambience.clear()
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'telemetry_status' then
+    local previous = M._telemetry.status()
+    local starting = msg.active == true and (not previous.active or msg.session ~= previous.session)
     M._telemetry.setStatus(msg)
+    if starting and M._telemetry.isActive() then M._clearTelemetryContext() end
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
     st.refreshLater = nil       -- (a restarted server numbers its anchors from 1 again)
@@ -1047,6 +1060,7 @@ local function onMessage(msg)
     end
     p.ready, p.msg = true, msg -- committed by the distance rule in updateWorld()
     if p.sentAt then st.terrainLatency = st.clock - p.sentAt end
+    if p.sentWallAt then st.terrainLatencyWall = math.max(0, M._telemetryClock() - p.sentWallAt) / 1000 end
     st.terrainErrorAt = nil
   elseif t == 'terrain_refresh' then
     -- the graded block in place of a teleport's provisional one (server make_provisional; the user, 2026-10-22:
@@ -1250,6 +1264,9 @@ end
 
 local function updatePlayer(dt)
   st.player = nil
+  -- A delayed vehicle move can still expose old GE coordinates until physics /
+  -- onPreRender confirms it. Keep that observation unqualified for spatial probes.
+  M._telemetryPlayerAnchor = not st.lagProbe and st.anchor or nil
   st.cam = cameraState()
   local veh = getPlayerVehicle(0)
   if not st.anchor then return end
@@ -1547,7 +1564,8 @@ local function updateWorld(dt)
   if fa == 'prepare' then
     if net.isConnected() and anchorKnown() then
       local id = nextId()
-      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock }
+      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty,
+        sentAt = st.clock, sentWallAt = M._telemetryClock() }
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
     end
   elseif fa == 'commit' then
@@ -1946,23 +1964,42 @@ function M._telemetryContext(full)
   local c = {}
   for k, v in pairs(M._telemetryLastContext or {}) do c[k] = v end
   c.queues_age_s = M._telemetryContextAt and math.max(0, st.clock - M._telemetryContextAt) or nil
+  local wall = M._telemetryClock()
+  c.queues_age_wall_s = M._telemetryContextWallAt and math.max(0, wall - M._telemetryContextWallAt) / 1000 or nil
   local p, b = st.player, st.block
+  -- updateWorld can rebase after updatePlayer. The next capture runs before
+  -- updatePlayer: never compare the old-frame position with new-frame terrain.
+  c.player_frame_current = p ~= nil and M._telemetryPlayerAnchor == st.anchor and not st.rebasing
   local speed = p and math.sqrt((p.vx or 0) ^ 2 + (p.vy or 0) ^ 2) or 0
   c.speed_mps, c.lua_mb = speed, collectgarbage('count') / 1024
+  c.vertical_speed_mps = p and p.vz or nil
   c.connected, c.active, c.paused = net.isConnected(), st.inOurLevel and st.active or false, st.paused == true
   c.rebasing, c.ground_held = st.rebasing ~= nil, dropHold.active == true
   c.edge_held = st.guard and st.guard.pausedByUs == true or false
+  c.guard_mode = st.guard and ({ off = 0, clear = 1, warn = 2, hold = 3, air = 4 })[st.guard.mode] or nil
+  c.guard_holds, c.guard_rescues = st.guard and st.guard.holds, st.guard and st.guard.rescues
+  c.guard_failed = guardFailed == true
   c.ground_ready = b ~= nil and st.placeFrames == nil and not c.ground_held
   c.server_backlog, c.terrain_last_s = st.serverBacklog, st.terrainLatency
   c.terrain_wait_s = st.terrainPending and st.terrainPending.sentAt and math.max(0, st.clock - st.terrainPending.sentAt) or 0
+  c.terrain_wait_wall_s = st.terrainPending and st.terrainPending.sentWallAt
+    and math.max(0, wall - st.terrainPending.sentWallAt) / 1000 or nil
+  if not st.terrainPending then c.terrain_wait_wall_s = 0 end
+  c.terrain_last_wall_s = st.terrainLatencyWall
+  c.terrain_pending_ready = st.terrainPending and st.terrainPending.ready == true or false
   c.follow_count, c.rebase_count = st.followCount, st.rebaseCount
+  local audio = ambience.spaceStats()
+  c.audio_spaces_live, c.audio_spaces_created, c.audio_spaces_deleted = audio.live, audio.created, audio.deleted
+  c.audio_spaces_moved, c.audio_spaces_replaced = audio.moved, audio.replaced
   c.net_pending_frames = net.pendingFrames()
   c.lat, c.lon = nil, nil
   if p and M._telemetry.status().include_location == true then c.lat, c.lon = p.lat, p.lon end
   c.block_edge_m, c.block_edge_s = nil, nil
-  if p and b then
+  c.block_inside, c.block_outside_m = nil, nil
+  if p and b and c.player_frame_current then
     local x0, y0, x1, y1 = lattice.groundBox(b.cx, b.cy)
     local edge = math.min(p.x - x0, x1 - p.x, p.y - y0, y1 - p.y)
+    c.block_inside, c.block_outside_m = edge >= 0, math.max(0, -edge)
     if speed > 1 and edge >= 0 then
       local hx, hy = (p.vx or 0) / speed, (p.vy or 0) / speed
       edge = math.min(hx > 0 and (x1 - p.x) / hx or hx < 0 and (x0 - p.x) / hx or math.huge,
@@ -1982,7 +2019,7 @@ function M._telemetryContext(full)
     -- roads.ahead samples every 32 m. Use a sampled endpoint, not an
     -- unobserved final 16 m between 1984 and a nominal 2000 m horizon.
     c.road_probe_m, c.road_probe_step_m, c.road_probe_limited = 1984, 32, false
-    if p and speed > 1 then
+    if p and speed > 1 and c.player_frame_current then
       local distance, limited = 1984, true
       for _, tile in ipairs(roads.ahead(p.x, p.y, (p.vx or 0) / speed, (p.vy or 0) / speed, 1984)) do
         if tile.arrived == false or not tile.road or (tile.col ~= 'none' and tile.col ~= 'solid') then
@@ -1993,8 +2030,10 @@ function M._telemetryContext(full)
       c.road_ahead_m, c.road_ahead_s, c.road_probe_limited = distance, distance / speed, limited
     end
     c.queues_age_s, M._telemetryContextAt = 0, st.clock
+    c.queues_age_wall_s, M._telemetryContextWallAt = 0, wall
     M._telemetryLastContext = c
   end
+  if not c.player_frame_current then c.road_ahead_m, c.road_ahead_s, c.road_probe_limited = nil, nil, nil end
   return c
 end
 
@@ -2408,6 +2447,8 @@ end
 M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
+  M._clearTelemetryContext()
+  M._telemetryPlayerAnchor = nil
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   groundcover.enginePatch(false)

@@ -86,6 +86,48 @@ game through Proton can be unavailable. No GPU hardware utilization/VRAM, precis
 driver timings, native crash stack attribution, or automatic leak diagnosis is
 claimed. A native crash still needs the game's crash report/minidump.
 
+## Additional motion diagnostics (next development build)
+
+The source candidate adds signed `vertical_speed_mps`, `block_inside`, and
+`block_outside_m` (the largest axis distance beyond the terrain bounds). These
+use existing player state and geometry without additional physics queries.
+They distinguish an ascent/descent and an out-of-bounds position without recording
+geographic coordinates. They do not measure tyre contact or height above ground.
+The existing `ground_ready` is a logical loading flag, not a collision test; it
+can remain true while a vehicle is outside the block.
+
+`guard_mode` records the existing guard decision: 0 off, 1 clear, 2 warning,
+3 hold, 4 airborne/no nearby ground. Unknown decisions are omitted. Hold/rescue
+counters (guard decisions/attempts, not confirmed successful actions) and
+`guard_failed` help distinguish intentional bypass from an error.
+These observations do not change the guard's behavior.
+
+`player_frame_current` verifies the cached player observation belongs to the
+current world origin. Road lead and terrain-boundary measurements are omitted
+while the origin is changing or the player observation belongs to the previous
+origin. In 1.8.4-dev.1, that transition could produce false zero distances by
+comparing old-frame player coordinates with new-frame terrain. A zero in that
+version's rebase window alone is therefore not evidence of unloaded ground.
+
+`queues_age_wall_s`, `terrain_wait_wall_s`, and `terrain_last_wall_s` use a
+monotonic wall clock. The older fields without `_wall` retain their engine-clock
+meaning for compatibility; engine `dtReal` can undercount long stalls. A pending
+request's age includes time spent ready but waiting for a safe commit;
+`terrain_pending_ready` distinguishes that state. The last response latency ends
+when the matching ready message arrives. The analyzer prefers wall age when
+available and labels the engine-clock fallback in older recordings.
+
+These fields are absent from published 1.8.4-dev.1 recordings. They have offline
+tests; live engine validation requires a rebuilt candidate and a new session.
+
+`audio_spaces_live/created/deleted/moved/replaced` describe streamed sound-space
+and point-emitter objects managed by Earth. Counts exclude vehicle audio, rain,
+room tone, and the engine's own audio objects. Live is a tracked count, reconciled
+when normal work discovers a missing object; collection does not scan the scene.
+Created/deleted/moved are cumulative operations; replaced counts new objects
+created for an already tracked tile. They show churn, not native object lifetime
+or proof of an audio-engine crash cause.
+
 ## Repeatable I-95 comparison
 
 Record two passes of the same Virginia section, one in each direction, with the

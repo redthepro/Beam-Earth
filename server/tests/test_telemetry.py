@@ -106,6 +106,30 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual("lat" in item["context"], include is True)
             self.assertEqual("lon" in item["worst"]["context"], include is True)
 
+    def test_motion_boundary_and_wall_ages_survive_privacy_filter(self):
+        row = sample()
+        measurements = {"vertical_speed_mps": -12.5, "block_inside": False,
+                        "block_outside_m": 30, "queues_age_wall_s": 2.5,
+                        "terrain_wait_wall_s": 10.5, "terrain_last_wall_s": 8,
+                        "terrain_pending_ready": True, "guard_mode": 4,
+                        "guard_holds": 2, "guard_rescues": 1, "guard_failed": False,
+                        "player_frame_current": False, "audio_spaces_live": 5,
+                        "audio_spaces_created": 10, "audio_spaces_deleted": 5,
+                        "audio_spaces_moved": 20, "audio_spaces_replaced": 2}
+        row["context"].update(measurements)
+        row["worst"]["context"].update(measurements)
+        cleaned = telemetry.clean_client(row)
+        for context in (cleaned["context"], cleaned["worst"]["context"]):
+            for key, value in measurements.items():
+                self.assertEqual(context[key], value)
+            self.assertNotIn("lat", context)
+            self.assertNotIn("lon", context)
+        row["context"]["vertical_speed_mps"] = float("nan")
+        row["context"]["guard_mode"] = "PRIVATE"
+        cleaned = telemetry.clean_client(row)
+        self.assertNotIn("vertical_speed_mps", cleaned["context"])
+        self.assertNotIn("guard_mode", cleaned["context"])
+
     def test_resource_observations_continue_without_game_packets(self):
         manager = self.manager()
         manager.start()
@@ -272,6 +296,49 @@ class CaptureTests(unittest.TestCase):
         self.assertNotIn("-77.3", json.dumps(report))
         self.assertTrue(report["coordinates_recorded"])
 
+    def test_report_excludes_extreme_reported_speeds_but_preserves_measurements(self):
+        packets = []
+        # A valid 240 MPH run, an unpaused reset velocity, and the same transient while fully paused.
+        for seq, speed, paused in ((1, 240 / inspect_capture.MPH_PER_MPS, 0),
+                                   (2, 90000, 0), (3, 90000, 60)):
+            packet = sample(seq, speed=speed)
+            packet["frame"]["paused_frames"] = paused
+            packet["worst"]["context"]["speed_mps"] = speed
+            packets.append(packet)
+        # Even when the window ends at a normal speed, an extreme worst-frame observation disqualifies it.
+        packet = sample(4, speed=240 / inspect_capture.MPH_PER_MPS)
+        packet["frame"]["paused_frames"] = 10
+        packet["worst"]["context"]["speed_mps"] = 109885
+        packets.append(packet)
+        path = self.root / "reported-speed-outliers.jsonl"
+        path.write_text("".join(json.dumps({"kind": "sample", "elapsed_s": i, "client": packet}) + "\n"
+                                for i, packet in enumerate(packets, 1)))
+
+        report = inspect_capture.inspect(path)
+        self.assertEqual(report["reported_speed_outlier_windows"], 3)  # once per window, not twice per observation
+        self.assertEqual(report["speed_outlier_threshold_mph"], 1000)
+        self.assertEqual(report["high_speed_wall_s"], 1)
+        self.assertEqual(report["high_speed_partial_pause_windows"], 0)
+        self.assertEqual(report["context"]["speed_mps"]["max"], 90000)
+        self.assertAlmostEqual(report["worst_windows"][-1]["speed_mph"], 109885 * inspect_capture.MPH_PER_MPS)
+        self.assertEqual(sum(w["reported_speed_outlier"] for w in report["worst_windows"]), 3)
+        text = inspect_capture.render(report)
+        self.assertIn("Qualified reported 200+ MPH window exposure: 1.0 s", text)
+        self.assertIn("Diagnostic speed outlier windows: 3", text)
+        self.assertIn("above 1000 MPH", text)
+        self.assertIn("Reported speed (raw)", text)
+        self.assertIn("reported 240.0 MPH", text)
+        self.assertIn("window contains a diagnostic speed outlier", text)
+
+    def test_report_speed_outlier_threshold_is_strictly_above_1000_mph(self):
+        path = self.root / "reported-speed-threshold.jsonl"
+        path.write_text("".join(json.dumps({"kind": "sample", "elapsed_s": i,
+                                            "client": sample(i, speed=mph / inspect_capture.MPH_PER_MPS)}) + "\n"
+                                for i, mph in enumerate((1000, 1000.1), 1)))
+        report = inspect_capture.inspect(path)
+        self.assertEqual(report["reported_speed_outlier_windows"], 1)
+        self.assertEqual(report["high_speed_wall_s"], 1)
+
     def test_report_survives_bad_and_truncated_records(self):
         path = self.root / "partial.jsonl"
         good = {"kind": "sample", "elapsed_s": 1, "client": sample()}
@@ -341,8 +408,10 @@ class ClientContractTests(unittest.TestCase):
         self.assertTrue(report["worst_windows"][0]["road_probe_limited"])
         text = inspect_capture.render(report)
         self.assertIn("road ahead at least 18.5 s (probe limit reached)", text)
-        self.assertIn("queue observation 0.8 s old", text)
+        self.assertIn("queue observation 0.8 engine-clock s (may undercount stalls) old", text)
         self.assertIn("Fully paused windows are excluded", text)
+        report["worst_windows"][0]["queues_age_wall_s"] = 2.5
+        self.assertIn("queue observation 2.5 wall-clock s old", inspect_capture.render(report))
 
     def test_actual_lua_packet_matches_capture_schema(self):
         from lupa.luajit21 import LuaRuntime
