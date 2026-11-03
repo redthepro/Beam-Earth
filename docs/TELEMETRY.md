@@ -86,7 +86,7 @@ game through Proton can be unavailable. No GPU hardware utilization/VRAM, precis
 driver timings, native crash stack attribution, or automatic leak diagnosis is
 claimed. A native crash still needs the game's crash report/minidump.
 
-## Additional motion diagnostics (next development build)
+## Additional motion diagnostics (dev.2 and later)
 
 The source candidate adds signed `vertical_speed_mps`, `block_inside`, and
 `block_outside_m` (the largest axis distance beyond the terrain bounds). These
@@ -117,8 +117,9 @@ request's age includes time spent ready but waiting for a safe commit;
 when the matching ready message arrives. The analyzer prefers wall age when
 available and labels the engine-clock fallback in older recordings.
 
-These fields are absent from published 1.8.4-dev.1 recordings. They have offline
-tests; live engine validation requires a rebuilt candidate and a new session.
+These fields are absent from published 1.8.4-dev.1 recordings. They are present
+in the local dev.2/dev.3 driving captures; those observations do not establish
+native-crash resolution.
 
 `audio_spaces_live/created/deleted/moved/replaced` describe streamed sound-space
 and point-emitter objects managed by Earth. Counts exclude vehicle audio, rain,
@@ -130,7 +131,7 @@ or proof of an audio-engine crash cause.
 
 ## Repeatable I-95 comparison
 
-The next candidate separates `gasstations` from the `roads` frame timer. In
+Dev.3 and later separate `gasstations` from the `roads` frame timer. In
 dev.1/dev.2, `roads` included both updates, so an old road-stage hitch does not
 identify which one was expensive. While capture is active, `road_anchor`,
 `road_ghosts`, `road_orphans`, `road_delete_chunk`, `road_held`,
@@ -157,6 +158,48 @@ queue growth, process memory trend, and whether a gap coincides with companion
 scheduling lag. Changing one setting at a time makes those comparisons useful.
 This build collects evidence for subsequent tuning; it does not establish an FPS
 improvement or prove the crash is fixed.
+
+## Dev-only event diagnostics (dev.4)
+
+The launcher installs these probes inside the normal Earth Lua mod. A shared
+`diagnostics` interface selects a capture provider in development packages and
+a no-op provider in production. `tools/mod_package.py` generates the selection
+from the version suffix for Windows/Linux frozen apps and both ZIP formats.
+Production packages physically omit `diagnostics_capture.lua`. Installing one
+over a development copy replaces the mod tree and removes the old provider.
+Source checkouts default to the no-op provider; packaging does not edit them.
+The existing aggregate capture remains opt-in. Detailed events additionally
+require a development package; no runtime setting enables them in production.
+
+During an active dev capture, ordered events record origin changes, large player
+position discontinuities, scenery swaps/retirement and safety holds. A
+`player_jump` records a displacement over 250 m between observations in the
+same world frame. It does not identify intent: collision recovery, resetting
+the car or moving it forward to the crash site can legitimately produce it.
+Exclude those recovery intervals from uninterrupted-driving comparisons.
+
+Events carry a capture-local frame, sequence and elapsed frame-duration clock.
+The report keeps companion receipt time separate. At most 32 events are retained
+per sample window; overflow is counted. Capture stops clear buffered events,
+and the inspector retains only the most recent 64 events plus total counts.
+Only allowlisted numeric/boolean fields and fixed event names are accepted.
+No tile keys, coordinates, filenames or arbitrary text enter these events.
+They use existing state, without scene scans or extra physics queries.
+
+| Event | Numeric reason/phase interpretation |
+| --- | --- |
+| `frame_shift` | Phase 1 vehicle move requested; 2 scene committed; 3 explicit teleport committed; 4 probe completed (reason 1 destination observed, 2 original vehicle absent/changed); 5 confirmation timed out. A timeout keeps spatial decisions gated while physics, UI and network continue; an Earth teleport can supersede the failed move. |
+| `player_jump` | Observed same-frame displacement; recovery/reset may explain it. |
+| `far_rebase` | Reason 1 preserves old coverage, 2 teleport. `retained` counts live globals, `adds` pending globals, `waiting` retained reveals; `retired` here counts previous-generation coverage still retained, not objects deleted. |
+| `far_swap` | Reason 1 instant, 2 rise over old coverage, 3 crossover; reason 4 reconciles late global intent and is not a completed reveal (`ready=false`). |
+| `far_retire` | Reason 1 replacement covers old scenery, 2 explicit removal, 3 completed far-field generation. Counts describe logical retirement; engine deletion can follow later. |
+| `drop_hold` | Reason 1 start, 2 player resumed, 3 placed on ground, 4 timeout, 5 ready/released. |
+| `edge_guard` | Mode 0 off, 1 clear, 2 warning, 3 hold, 4 airborne; cumulative hold/rescue attempts accompany transitions. |
+
+These are lifecycle observations, not a screenshot or proof that every rendered
+pixel remained covered. The unfinished sample window can still be lost in a
+native crash. Mark visible disappearances so their timing can be compared with
+the event sequence.
 
 ## Validation boundaries
 

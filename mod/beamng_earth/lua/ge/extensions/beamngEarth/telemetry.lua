@@ -3,6 +3,7 @@
 -- bucket upper bounds, not exact percentiles. A sample covers measured wall time, not an
 -- assumed one second. The last (overflow) bucket's estimate is the observed maximum.
 local M = {}
+local diagnostics = require('beamngEarth/diagnostics')
 M.INTERVAL_MS = 1000
 M.EDGES = { 1, 2, 4, 8, 12, 16.7, 20, 25, 33.4, 50, 66.7, 100, 150, 250, 500, 1000, 2000, 5000 }
 local active, sequence, elapsed, dropped, lastSim = false, 0, 0, 0, nil
@@ -35,15 +36,18 @@ function M.setStatus(s)
   if running and (not active or s.session ~= state.session) then
     sequence, elapsed, dropped, lastSim = 0, 0, 0, nil
     resetWindow()
+    diagnostics.reset()
   end
   state = s
   state.active = running
   active = running
+  diagnostics.setActive(active)
   if not active then lastSim = nil; resetWindow() end
 end
 function M.stopLocal(reason)
   stoppedByUser = true
   active, lastSim = false, nil
+  diagnostics.setActive(false)
   resetWindow()
   state = { available = state.available, active = false, session = state.session,
     samples = state.samples, dropped = state.dropped, bytes = state.bytes,
@@ -107,7 +111,7 @@ function M.frame(ms, marks, hitch, context, engine, send)
       sim_s = w.sim_s, sim_wall_ms = w.sim_wall_ms,
       sim_wall_ratio = w.sim_wall_ms > 0 and w.sim_s / (w.sim_wall_ms / 1000) or nil, paused_frames = w.paused_frames,
       histogram = w.histogram }, mod_ms = w.mod, engine_ms = numeric(engine and engine()),
-    context = c, worst = w.worst }
+    context = c, worst = w.worst, diagnostics = diagnostics.drain() }
   resetWindow()
   if not send or not send(row) then dropped = dropped + 1 end
   return row

@@ -63,4 +63,48 @@ T.check(row.mod_ms.good == 3 and row.mod_ms.x == nil and row.mod_ms.secret == ni
   'nonfinite / negative / string timer values never escape')
 cap.setStatus({ available = true, active = false })
 T.check(not cap.isActive(), 'server limit / disk failure can stop collection')
+T.check(row.diagnostics == nil, 'stable capture omits dev diagnostics')
+
+-- The same telemetry lifecycle drives the dev provider, without it importing
+-- telemetry or depending on engine globals. Stable tests above use source buildinfo.
+package.loaded['beamngEarth/buildinfo'] = { devDiagnostics = true }
+package.loaded['beamngEarth/diagnostics'] = nil
+package.loaded['beamngEarth/telemetry'] = nil
+cap = require('beamngEarth/telemetry')
+local diagnostics = require('beamngEarth/diagnostics')
+T.check(not diagnostics.enabled(), 'requiring dev telemetry cannot start diagnostics')
+cap.setStatus({ available = true, active = true, session = 'dev-a' })
+diagnostics.frame(1000)
+diagnostics.event('far_rebase', { anchor_id = 2, previous_anchor_id = 1, retained = 50 })
+row = frame(1000, 1)
+T.check(row.diagnostics.events[1].name == 'far_rebase' and row.diagnostics.events[1].retained == 50,
+  'active dev sample carries bounded event chronology')
+diagnostics.frame(1000)
+diagnostics.event('far_swap', { adds = 2 })
+allow = false
+frame(1000, 1)
+allow = true
+row = frame(1000, 1)
+T.check(#row.diagnostics.events == 0 and row.context.telemetry_dropped == 1,
+  'failed transport does not replay old events; sample loss remains explicit')
+diagnostics.event('far_retire', { retired = 5 })
+cap.setStatus({ available = true, active = true, session = 'dev-b' })
+diagnostics.frame(1000)
+diagnostics.event('edge_guard', { mode = 1 })
+row = frame(1000, 1)
+T.check(#row.diagnostics.events == 1 and row.diagnostics.events[1].seq == 1
+  and row.diagnostics.events[1].frame == 1 and row.diagnostics.events[1].name == 'edge_guard',
+  'session rollover clears prior events and resets frame ordering')
+cap.stopLocal()
+cap.setStatus({ available = true, active = true, session = 'dev-b' })
+T.check(not diagnostics.enabled(), 'stale active status cannot restart locally stopped dev probes')
+cap.startRequested()
+cap.setStatus({ available = true, active = true, session = 'dev-c' })
+T.check(diagnostics.enabled(), 'explicit new capture enables probes')
+cap.disconnected()
+T.check(not diagnostics.enabled(), 'disconnect disables dev probes')
+cap.startRequested()
+cap.setStatus({ available = true, active = true, session = 'dev-d' })
+cap.setStatus({ available = true, active = false })
+T.check(not diagnostics.enabled(), 'server stop or capture limit disables dev probes')
 T.done('test_telemetry')

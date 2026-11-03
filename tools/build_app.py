@@ -26,6 +26,11 @@ import shutil
 import subprocess
 import sys
 
+if __package__:
+    from . import mod_package
+else:
+    import mod_package
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "BeamNG.Earth"
 IS_WIN = os.name == "nt"
@@ -140,6 +145,9 @@ BOOT_SHIM = ("import sys\n"
 
 
 def pyinstaller(work, ico, onefile, ver=None, boot=None):
+    ver = version() if ver is None else ver
+    mod = mod_package.stage_mod(os.path.join(ROOT, "mod", "beamng_earth"),
+                                os.path.join(work, "mod", "beamng_earth"), ver)
     server = os.path.join(ROOT, "server")
     mods = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(server, "*.py")))
     cmd = [sys.executable] + (["-c", BOOT_SHIM, boot] if boot else ["-m", "PyInstaller"])
@@ -149,7 +157,7 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--collect-submodules", "fsspec",
            "--hidden-import", "certifi", "--collect-data", "certifi",   # CA bundle fallback (launcher.ensure_ca_certs)
            "--hidden-import", "truststore",     # Windows: the native certificate store (netfetch.windows_ssl_context, PR #371)
-           "--add-data", f"{os.path.join(ROOT, 'mod', 'beamng_earth')}{SEP}mod/beamng_earth",
+           "--add-data", f"{mod}{SEP}mod/beamng_earth",
            "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}.",
            "--add-data", f"{os.path.join(ROOT, 'LICENSE')}{SEP}.",
            "--add-data", f"{os.path.join(ROOT, 'CREDITS.md')}{SEP}.",
@@ -241,7 +249,7 @@ def main():
         out = os.path.join(a.out, f"{NAME}-{ver}.exe")
         shutil.copyfile(os.path.join(dist, NAME + ".exe"), out)
     else:
-        dist = pyinstaller(work, ico, onefile=False)
+        dist = pyinstaller(work, ico, onefile=False, ver=ver)
         out = os.path.join(a.out, f"{NAME}-{ver}-x86_64.AppImage")
         appimage(dist, png, out, a.appimagetool)
     print(f"built {out} ({os.path.getsize(out) / 1e6:.0f} MB)")

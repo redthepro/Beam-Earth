@@ -16,6 +16,11 @@ import os
 import sys
 import zipfile
 
+if __package__:
+    from . import mod_package
+else:
+    import mod_package
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FILES = ["install.py", "start.py", "launcher.py", "bmplaunch.py", "apppaths.py", "run_server.bat", "run_server.sh", "README.md", "LICENSE", "CREDITS.md",
@@ -70,10 +75,16 @@ def tree_files(tree):
 def beammp_zip(out_dir, ver):
     """The BeamMP server's drop-in zip: the mod as Resources/Client/beamng_earth.zip, the plugin, the README."""
     import io
+    mod_source = os.path.join(ROOT, "mod/beamng_earth")
+    mod_package.validate_source(mod_source, ver)
     mod = io.BytesIO()
     with zipfile.ZipFile(mod, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel in tree_files("mod/beamng_earth"):
-            z.write(os.path.join(ROOT, "mod/beamng_earth", rel), rel)
+            if mod_package.include_file(rel, ver):
+                source = os.path.join(mod_source, rel)
+                info = zipfile.ZipInfo.from_file(source, rel)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(info, mod_package.file_bytes(source, rel, ver))
     path = os.path.join(out_dir, f"BeamNG.Earth-BeamMP-Server-{ver}.zip")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.writestr("Resources/Client/beamng_earth.zip", mod.getvalue(), zipfile.ZIP_STORED)
@@ -91,18 +102,24 @@ def main():
     ap.add_argument("--beammp", action="store_true", help="also the BeamMP server's drop-in zip")
     args = ap.parse_args()
     ver = version()
+    mod_prefix = "mod/beamng_earth/"
+    mod_package.validate_source(os.path.join(ROOT, "mod/beamng_earth"), ver)
     top = f"BeamNG.Earth-{ver}"
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, top + ".zip")
-    files = collect()
+    files = [rel for rel in collect() if not rel.startswith(mod_prefix)
+             or mod_package.include_file(rel[len(mod_prefix):], ver)]
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel in files:
             src = os.path.join(ROOT, rel)
             info = zipfile.ZipInfo.from_file(src, f"{top}/{rel}")
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (0o100755 if os.path.basename(rel) in EXECUTABLE else 0o100644) << 16
-            with open(src, "rb") as f:
-                z.writestr(info, f.read())
+            if rel.startswith(mod_prefix):
+                z.writestr(info, mod_package.file_bytes(src, rel[len(mod_prefix):], ver))
+            else:
+                with open(src, "rb") as f:
+                    z.writestr(info, f.read())
     print(f"{path}: {len(files)} files, {os.path.getsize(path) / 1e6:.1f} MB")
     if args.beammp:
         beammp_zip(args.out, ver)

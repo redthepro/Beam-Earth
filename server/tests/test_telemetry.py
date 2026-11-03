@@ -139,6 +139,61 @@ class CaptureTests(unittest.TestCase):
         self.assertGreaterEqual(len(resources), 1)
         self.assertIsNone(resources[0]["resources"]["game"]["cpu_pct"])
 
+    def test_diagnostics_fixed_schema_privacy_and_disk_roundtrip(self):
+        row = sample()
+        row["diagnostics"] = {"events": [{"name": "frame_shift", "frame": 12, "seq": 3,
+            "elapsed_ms": 200.5, "anchor_id": 2, "previous_anchor_id": 1, "phase": 2,
+            "distance_m": 600, "vertical_speed_mps": -12.5, "ready": False,
+            "mode": 4, "reason": "PRIVATE", "lat": 37.2, "lon": -77.3,
+            "key": "PRIVATE", "path": "PRIVATE", "token": "PRIVATE", "adds": [1],
+            "removes": float("nan"), "waiting": float("inf"), "retired": 1e16}],
+            "dropped": 4, "private": "PRIVATE"}
+        expected = {"events": [{"name": "frame_shift", "frame": 12, "seq": 3,
+            "elapsed_ms": 200.5, "anchor_id": 2, "previous_anchor_id": 1, "phase": 2,
+            "distance_m": 600, "vertical_speed_mps": -12.5, "ready": False, "mode": 4}], "dropped": 4}
+        for location in (False, True):
+            self.assertEqual(telemetry.clean_client(row, location)["diagnostics"], expected)
+        manager = self.manager()
+        manager.start()
+        self.assertTrue(manager.sample(row))
+        path, rows = self.end(manager)
+        saved = next(r["client"] for r in rows if r["kind"] == "sample")
+        self.assertEqual(saved["diagnostics"], expected)
+        self.assertNotIn("PRIVATE", path.read_text())
+
+    def test_diagnostics_server_bound_and_rejected_events_are_counted(self):
+        event = {"name": "player_jump", "frame": 1, "seq": 1, "elapsed_ms": 16}
+        row = sample()
+        events = [dict(event, seq=i + 1) for i in range(10000)]
+        events[0]["name"] = "PRIVATE"
+        events[1]["frame"] = True
+        events[2]["seq"] = -1
+        events[3]["elapsed_ms"] = float("inf")
+        events[4]["name"] = ["not a string"]
+        events[5] = "not an event"
+        events[6]["elapsed_ms"] = -1
+        events[7]["frame"] = 1.5
+        row["diagnostics"] = {"events": events, "dropped": 2}
+        result = telemetry.clean_client(row)["diagnostics"]
+        self.assertEqual(len(result["events"]), 24)
+        self.assertEqual(result["dropped"], 9978)
+        self.assertEqual(result["events"][0]["seq"], 9)
+        self.assertEqual(result["events"][-1]["seq"], 32)
+
+    def test_diagnostics_malformed_optional_data_does_not_break_frame_capture(self):
+        row = sample()
+        for value in (None, [], "PRIVATE", {"events": "PRIVATE"}, {"events": {"private": 1}}):
+            row["diagnostics"] = value
+            cleaned = telemetry.clean_client(row)
+            self.assertNotIn("diagnostics", cleaned)
+            self.assertEqual(cleaned["frame"]["frames"], 60)
+        for empty in ([], {}):
+            for dropped in (True, -1, 1e16, "PRIVATE"):
+                row["diagnostics"] = {"events": empty, "dropped": dropped}
+                self.assertEqual(telemetry.clean_client(row)["diagnostics"], {"events": [], "dropped": 0})
+        row["diagnostics"] = {"events": [None] * 35, "dropped": 10**15}
+        self.assertEqual(telemetry.clean_client(row)["diagnostics"]["dropped"], 10**15)
+
     def test_server_only_samples_and_counter_allowlist(self):
         manager = self.manager()
         manager.start()
@@ -351,6 +406,47 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(report["invalid_lines"], 2)
         self.assertEqual(report["samples"], 1)
 
+    def test_report_bounded_event_chronology_separates_client_and_receipt_clocks(self):
+        path = self.root / "dev-events.jsonl"
+        rows = []
+        for window in range(4):
+            packet = sample(window + 1)
+            packet["diagnostics"] = {"events": [
+                {"name": "player_jump" if i == 0 else "far_swap", "frame": window * 60 + i,
+                 "seq": window * 32 + i + 1, "elapsed_ms": window * 1000 + i,
+                 "adds": i, "ready": False, "reason": 2, "lat": 37.2,
+                 "path": "PRIVATE", "token": "PRIVATE"} for i in range(32)], "dropped": window}
+            rows.append({"kind": "sample", "elapsed_s": 100 + window, "client": packet})
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        report = inspect_capture.inspect(path)
+        diagnostics = report["diagnostics"]
+        self.assertEqual(diagnostics["windows"], 4)
+        self.assertEqual(diagnostics["events"], 128)
+        self.assertEqual(diagnostics["counts"], {"player_jump": 4, "far_swap": 124})
+        self.assertEqual(diagnostics["dropped"], 6)
+        self.assertEqual(len(diagnostics["recent"]), 64)
+        first, last = diagnostics["recent"][0], diagnostics["recent"][-1]
+        self.assertEqual((first["seq"], first["frame"], first["elapsed_ms"], first["received_elapsed_s"]),
+                         (65, 120, 2000, 102))
+        self.assertEqual((last["seq"], last["frame"], last["elapsed_ms"], last["received_elapsed_s"]),
+                         (128, 211, 3031, 103))
+        text = inspect_capture.render(report)
+        self.assertIn("crash recovery or a reset may explain it", text)
+        self.assertIn("client frame 120, seq 65, elapsed 2000.000 ms; window received at 102.000 s", text)
+        self.assertIn("reported/rejected events dropped: 6", text)
+        self.assertNotIn("PRIVATE", text + json.dumps(report))
+        self.assertNotIn('"lat"', json.dumps(diagnostics))
+        self.assertFalse(last["ready"])
+
+    def test_report_without_events_keeps_legacy_output_and_schema(self):
+        path = self.root / "legacy.jsonl"
+        path.write_text(json.dumps({"kind": "sample", "elapsed_s": 1, "client": sample()}) + "\n")
+        report = inspect_capture.inspect(path)
+        self.assertEqual(report["diagnostics"], {"windows": 0, "events": 0, "dropped": 0, "counts": {}, "recent": []})
+        self.assertNotIn("Dev event chronology", inspect_capture.render(report))
+        del report["diagnostics"]
+        self.assertNotIn("Dev event chronology", inspect_capture.render(report))
+
     def test_cli_json_and_output_without_python_path_requirement(self):
         manager = self.manager()
         manager.start()
@@ -376,11 +472,17 @@ class CaptureTests(unittest.TestCase):
 
 
 class ClientContractTests(unittest.TestCase):
-    def test_fully_paused_lua_window_with_stale_speed_is_not_high_speed_coverage(self):
+    def lua_module(self, dev=False):
         from lupa.luajit21 import LuaRuntime
         runtime = LuaRuntime()
-        path = Path(__file__).resolve().parents[2] / "mod/beamng_earth/lua/ge/extensions/beamngEarth/telemetry.lua"
-        module = runtime.execute(path.read_text(encoding="utf-8"))
+        extension_path = ROOT / "mod/beamng_earth/lua/ge/extensions"
+        runtime.execute("package.path = ... .. '/?.lua;' .. package.path", extension_path.as_posix())
+        runtime.execute("package.loaded['beamngEarth/buildinfo'] = { devDiagnostics = ... }", dev)
+        module = runtime.execute("return require('beamngEarth/telemetry')")
+        return runtime, module
+
+    def test_fully_paused_lua_window_with_stale_speed_is_not_high_speed_coverage(self):
+        runtime, module = self.lua_module()
         module.setStatus(runtime.table_from({"active": True, "session": "paused-contract"}))
         context = runtime.eval("function() return {speed_mps=107.2896, road_ahead_s=18.49, road_probe_limited=true, queues_age_s=0.8} end")
         send = runtime.eval("function() return true end")
@@ -414,10 +516,7 @@ class ClientContractTests(unittest.TestCase):
         self.assertIn("queue observation 2.5 wall-clock s old", inspect_capture.render(report))
 
     def test_actual_lua_packet_matches_capture_schema(self):
-        from lupa.luajit21 import LuaRuntime
-        runtime = LuaRuntime()
-        path = Path(__file__).resolve().parents[2] / "mod/beamng_earth/lua/ge/extensions/beamngEarth/telemetry.lua"
-        module = runtime.execute(path.read_text(encoding="utf-8"))
+        runtime, module = self.lua_module()
         module.setStatus(runtime.table_from({"active": True, "session": "contract", "include_location": False}))
         context = runtime.eval("function() return {speed_mps=107.2896, queues_age_s=0.2, lat=38, lon=-77} end")
         send = runtime.eval("function() return true end")
@@ -463,6 +562,30 @@ class ClientContractTests(unittest.TestCase):
         self.assertIn("not exact hitch occurrence times", text)
         self.assertIn("1 partially paused windows count their whole measured duration", text)
         self.assertNotIn("Previous client telemetry work", text)
+
+    def test_actual_dev_lua_events_survive_cleaning_and_empty_lua_tables(self):
+        runtime, module = self.lua_module(dev=True)
+        diagnostics = runtime.execute("return require('beamngEarth/diagnostics')")
+        module.setStatus(runtime.table_from({"active": True, "session": "dev-contract"}))
+        diagnostics.frame(1000)
+        diagnostics.event("drop_hold", runtime.table_from({"phase": 1, "distance_m": 500, "ready": False, "lat": 37.2}))
+        send = runtime.eval("function() return true end")
+
+        def convert(value):
+            if not hasattr(value, "items"):
+                return value
+            pairs = dict(value.items())
+            if pairs and all(type(k) is int for k in pairs):
+                return [convert(pairs[k]) for k in range(1, len(pairs) + 1)]
+            return {k: convert(v) for k, v in pairs.items()}
+
+        packet = convert(module.frame(1000, None, None, None, None, send))
+        clean = telemetry.clean_client(packet)
+        self.assertEqual(clean["diagnostics"], {"events": [{"name": "drop_hold", "frame": 1,
+            "seq": 1, "elapsed_ms": 1000, "phase": 1, "distance_m": 500, "ready": False}], "dropped": 0})
+        empty_packet = convert(module.frame(1000, None, None, None, None, send))
+        self.assertEqual(empty_packet["diagnostics"]["events"], {})
+        self.assertEqual(telemetry.clean_client(empty_packet)["diagnostics"], {"events": [], "dropped": 0})
 
 
 if __name__ == "__main__":

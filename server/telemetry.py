@@ -25,6 +25,9 @@ CONTEXT_FIELDS = CONTEXT_FIELDS | frozenset("player_frame_current audio_spaces_l
 TIMER_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
 SESSION_FILE = re.compile(r"capture-\d{8}T\d{6}-[0-9a-f]{12}\.jsonl\Z")
 REASONS = frozenset(("user", "disconnect", "shutdown", "size_limit", "write_error"))
+DIAGNOSTIC_NAMES = frozenset("frame_shift player_jump far_rebase far_swap far_retire drop_hold edge_guard".split())
+DIAGNOSTIC_FIELDS = frozenset("anchor_id previous_anchor_id phase distance_m speed_mps vertical_speed_mps adds removes waiting retained retired reason ready mode holds rescues".split())
+MAX_DIAGNOSTIC_EVENTS = 32
 
 
 def _number(value):
@@ -60,6 +63,38 @@ def _context(value, include_location):
     return out
 
 
+def _diagnostics(value):
+    """Bound event work/size independently of the sender; no location exemption.
+
+    Sequence numbers order attempted events, including events lost at the client
+    bound. dropped is per window, augmented by events rejected/truncated here.
+    Empty Lua tables can encode as {}, so accept that as an empty event array.
+    """
+    if not isinstance(value, dict):
+        return None
+    events = value.get("events")
+    if isinstance(events, dict) and not events:
+        events = []
+    if not isinstance(events, list):
+        return None
+    dropped = value.get("dropped", 0)
+    if type(dropped) is not int or not 0 <= dropped <= 1e15:
+        dropped = 0
+    dropped += max(0, len(events) - MAX_DIAGNOSTIC_EVENTS)
+    clean = []
+    for event in islice(events, MAX_DIAGNOSTIC_EVENTS):
+        if (not isinstance(event, dict) or not isinstance(event.get("name"), str)
+                or event["name"] not in DIAGNOSTIC_NAMES
+                or any(type(event.get(k)) is not int or not 0 <= event[k] <= 1e15 for k in ("frame", "seq"))
+                or not _number(event.get("elapsed_ms")) or event["elapsed_ms"] < 0):
+            dropped += 1
+            continue
+        row = _fields(event, DIAGNOSTIC_FIELDS)
+        row.update({k: event[k] for k in ("name", "frame", "seq", "elapsed_ms")})
+        clean.append(row)
+    return {"events": clean, "dropped": min(10**15, dropped)}
+
+
 def clean_client(value, include_location=False):
     """Copy only supported telemetry; refuse malformed frame counters/histograms."""
     if not isinstance(value, dict) or type(value.get("schema")) is not int or value["schema"] != SCHEMA:
@@ -86,6 +121,9 @@ def clean_client(value, include_location=False):
         out["worst"] = {"ms": worst["ms"], "mod_ms": _timers(worst.get("mod_ms")),
                         "engine_ms": _timers(worst.get("engine_ms")),
                         "context": _context(worst.get("context"), include_location)}
+    diagnostics = _diagnostics(value.get("diagnostics"))
+    if diagnostics is not None:
+        out["diagnostics"] = diagnostics
     return out
 
 

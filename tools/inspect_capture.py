@@ -19,6 +19,7 @@ from telemetry import HISTOGRAM_MS, REASONS, clean_client, clean_server  # noqa:
 MAX_LINE = 64 * 1024
 MPH_PER_MPS = 2.236936
 SPEED_OUTLIER_MPH = 1000.0  # Diagnostic exclusion only; keep the original measurements.
+MAX_RECENT_EVENTS = 64
 
 
 def _finite(value):
@@ -54,7 +55,8 @@ def inspect(path):
            "reported_speed_outlier_windows": 0, "speed_outlier_threshold_mph": SPEED_OUTLIER_MPH,
            "context": {}, "server": {}, "resources": {}, "client_work": {}, "markers": [], "worst_windows": [],
            "capture": {}, "coordinates_recorded": False, "resource_discovery_failures": 0,
-           "resource_partial_groups": 0, "game_resource_missing": 0}
+           "resource_partial_groups": 0, "game_resource_missing": 0,
+           "diagnostics": {"windows": 0, "events": 0, "dropped": 0, "counts": {}, "recent": []}}
     prev_seq = None
     with Path(path).open("rb") as f:
         while True:
@@ -110,6 +112,19 @@ def inspect(path):
                 if type(seq) is int and prev_seq is not None and seq > prev_seq + 1:
                     out["sequence_gaps"] += seq - prev_seq - 1
                 prev_seq = seq
+                diagnostics = client.get("diagnostics")
+                if diagnostics is not None:
+                    summary = out["diagnostics"]
+                    summary["windows"] += 1
+                    summary["dropped"] += diagnostics["dropped"]
+                    for event in diagnostics["events"]:
+                        summary["events"] += 1
+                        name = event["name"]
+                        summary["counts"][name] = summary["counts"].get(name, 0) + 1
+                        # event elapsed_ms/frame/seq are client capture-local.
+                        # received_elapsed_s is the companion's distinct clock.
+                        summary["recent"].append(dict(event, received_elapsed_s=elapsed))
+                    del summary["recent"][:-MAX_RECENT_EVENTS]
                 frame = client["frame"]
                 out["frames"] += frame["frames"]
                 out["frame_wall_s"] += frame["wall_ms"] / 1000
@@ -206,6 +221,27 @@ def render(report):
              f"{_fmt(r['speed_outlier_threshold_mph'], 0)} MPH in the window-end or worst-frame observation. "
              "They are excluded from qualified 200+ MPH exposure, whether paused or unpaused. "
              "This is a diagnostic threshold, not a game speed limit; raw reported values remain in the statistics.", ""]
+    diagnostics = r.get("diagnostics", {})
+    if diagnostics.get("windows", 0):
+        lines += ["## Dev event chronology", "",
+                  f"Received {diagnostics['events']} events in {diagnostics['windows']} windows; "
+                  f"reported/rejected events dropped: {diagnostics['dropped']}. "
+                  "Missing entire sample windows may contain additional unobserved events.",
+                  "Client frame, event sequence and elapsed milliseconds preserve capture-local ordering; "
+                  "companion receipt seconds are a separate clock, not the event time. "
+                  "player_jump means an observed position discontinuity; crash recovery or a reset may explain it. "
+                  "It does not establish an unrequested teleport or its cause.", ""]
+        lines.append("Event counts: " + ", ".join(f"{name} {count}" for name, count in sorted(diagnostics['counts'].items())) + ".")
+        lines += ["", f"Most recent {len(diagnostics['recent'])} events (at most {MAX_RECENT_EVENTS} retained):", ""]
+        for event in diagnostics["recent"]:
+            extra = ", ".join(f"{key}={str(value).lower() if type(value) is bool else _fmt(value, 3)}"
+                              for key, value in sorted(event.items())
+                              if key not in ("name", "frame", "seq", "elapsed_ms", "received_elapsed_s"))
+            lines.append(f"- {event['name']}: client frame {event['frame']}, seq {event['seq']}, "
+                         f"elapsed {_fmt(event['elapsed_ms'], 3)} ms; "
+                         f"window received at {_fmt(event['received_elapsed_s'], 3)} s"
+                         + (f"; {extra}." if extra else "."))
+        lines.append("")
     lines += ["## Streaming and memory", ""]
     for key, label, units in (("speed_mps", "Reported speed (raw)", "m/s"), ("road_ahead_s", "Straight-ahead ready road horizon", "s"),
                               ("vertical_speed_mps", "Vertical velocity (positive up)", "m/s"),
