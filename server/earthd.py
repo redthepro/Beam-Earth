@@ -1882,6 +1882,23 @@ class Server:
                 q.put_nowait((anchor.id, anchor.lat, anchor.lon, keys))
             except Exception as e:      # a full / closed queue only costs the lookahead
                 log.debug("road plans ahead: %s", e)
+        remote = getattr(getattr(g, "shared", None), "remote", None)
+        if remote is not None:
+            # Spare host workers prepare a longer corridor while the local pools
+            # retain their existing near-car priorities. Cap distance and cells.
+            ahead = list(keys)
+            speed = math.hypot(vx, vy)
+            if math.isfinite(speed) and speed >= 8.0:
+                for seconds in (40.0, 50.0, 60.0, 70.0, 80.0, 90.0):
+                    lead = min(seconds, 12000.0 / speed)
+                    la, lo, _ = anchor.frame.enu_to_geodetic(x + vx * lead, y + vy * lead, 0.0)
+                    for key in mapcells.cells_for_bbox(float(la) - reach / 111320.0,
+                            float(lo) - reach / (111320.0 * max(0.05, math.cos(math.radians(float(la))))),
+                            float(la) + reach / 111320.0,
+                            float(lo) + reach / (111320.0 * max(0.05, math.cos(math.radians(float(la)))))):
+                        if key not in ahead:
+                            ahead.append(key)
+            remote.prefetch(ahead[:24])
         if self.road_pool is not None:      # road tiles plan in their processes: this one needs none ahead
             return
         with self.warm_cv:
@@ -5670,6 +5687,9 @@ class Connection:
 
 
 async def main_async(args):
+    os.environ["BNGE_ASSIST_OFFLINE"] = "1" if getattr(args, "offline", False) else "0"
+    if getattr(args, "assist_config", None):
+        os.environ["BNGE_ASSIST_CONFIG"] = args.assist_config
     if os.environ.get("BNGE_WORLD_BUNDLE") and (args.roads != "on" or args.grading != "on"):
         from worldbundle import BundleError
         raise BundleError("BNGE_WORLD_BUNDLE requires --roads on --grading on")
@@ -5730,6 +5750,19 @@ async def main_async(args):
     ROUTE_AHEAD_ON = args.route_prefetch == "on" and args.route_prefetch_km > 0
     ROUTE_AHEAD_MAX_M = args.route_prefetch_km * 1000.0
     block_pools, far_pool = [], None
+    assistance = None
+    assist_settings = {"roads": args.roads == "on", "grading": args.grading == "on" and args.roads == "on",
+                       "road_widths": args.road_widths == "on" and args.roads == "on",
+                       "airports": args.airports == "on", "sea": args.sea == "on",
+                       "roads_in_ground": roadsmod.ROADS_IN_GROUND}
+    if os.environ.get("BNGE_ASSIST_CONFIG") and not args.offline and not os.environ.get("BNGE_WORLD_BUNDLE"):
+        import assistclient
+        import assistjobs
+        assistjobs.register_context(args.cache_dir, mapdata, airports_db)
+        assistance = assistclient.get_client()
+        if assistance is not None:
+            os.environ["BNGE_ASSIST_SETTINGS"] = json.dumps(assist_settings)
+            log.info("server assistance enabled: distant geometry and verified road plans; local fallback retained")
     plancachemod.start_run(args.cache_dir)      # (before the workers: they inherit the run's id)
     if args.block_process == "on":
         ctx = multiprocessing.get_context("spawn")
@@ -5754,10 +5787,8 @@ async def main_async(args):
         # built with the same settings as these workers (peerwork.py)
         far_pool = peerworkmod.SharedFarPool(
             far_pool, peerworkmod.parse_peers(args.peers),
-            {"roads": args.roads == "on", "grading": args.grading == "on" and args.roads == "on",
-             "road_widths": args.road_widths == "on" and args.roads == "on", "airports": args.airports == "on",
-             "sea": args.sea == "on", "roads_in_ground": roadsmod.ROADS_IN_GROUND}, None,
-            peerworkmod.ReplyCache(os.path.join(args.cache_dir, "peercache")))
+            assist_settings, None, peerworkmod.ReplyCache(os.path.join(args.cache_dir, "peercache")),
+            assistance=assistance, assist_cache_dir=args.cache_dir)
     road_pool = None
     if args.block_process == "on" and args.roads == "on" and args.road_processes > 0:
         road_pool = poolsmod.RespawningPool(      # road tiles (blockworker.roads_tile)
@@ -5930,6 +5961,10 @@ async def main_async(args):
             server.areas.close()
         net.close()                 # today's request counters
         disk.close()                # the cache's last uses
+        if assistance is not None:
+            import assistplans
+            assistance.close()
+            assistplans.close()
 
 
 # (shared world building, commented out 2026-10-27 (off since 2026-10-23; the user: not coming back for a while))
@@ -6125,6 +6160,8 @@ def main():
     ap.add_argument("--peers", default=os.environ.get("BNGE_PEERS", ""),
                     help="compute sharing: helpers (HOST[:PORT] ...; peerwork.py serve on them) that build far tiles "
                          "when this server's own workers are busy (default: BNGE_PEERS)")
+    ap.add_argument("--assist-config", default=os.environ.get("BNGE_ASSIST_CONFIG"),
+                    help="optional absolute JSON path for authenticated TLS world assistance (off by default)")
     ap.add_argument("--workers", type=int, default=WORKERS, help="far-tile worker threads (keep <= 3: the game needs the cores)")
     ap.add_argument("--far-format", choices=farfield.FORMATS, default="cdae",
                     help="far-tile shape format: binary .cdae (default, ~5x faster to load) or Collada .dae")

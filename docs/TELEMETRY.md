@@ -228,6 +228,18 @@ opt-in; this control does not start recording.
 
 ## Validation boundaries
 
+With optional server assistance configured, server samples also include
+`assist_geometry_remote`, `assist_geometry_failed`, `assist_geometry_deferred`,
+`assist_geometry_ms` and `assist_received_bytes`. These are cumulative counters
+from the companion's main geometry/transport client, not a sum across every road
+worker process. Deferred means a bounded helper was busy, still preparing a job,
+or had incompatible inputs; local generation remains available. Milliseconds
+measure time spent attempting remote geometry, not CPU time saved.
+
+The helper logs aggregate job, cache and queue counters every 30 seconds. Road
+workers log bounded summaries when verified plans arrive. Neither logs credentials.
+Starting the helper does not start gameplay capture; recording remains opt-in.
+
 Unit/stub tests cover bounded collection, packet backpressure, consent filtering,
 session ownership, cancellation and restart, partial recordings, writer failures,
 retention, histogram aggregation, and process lifecycle accounting. Synthetic

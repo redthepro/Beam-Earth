@@ -81,6 +81,12 @@ def for_grader(cache_dir, grader, widths, wet):
     pc.source_versions = getattr(md, "bundle_versions", None) or getattr(md, "versions", None)
     pc.persist = (cache_dir, (FRAMES, pc.signature,
                               md.versions() if md is not None and hasattr(md, "versions") else None))
+    if os.environ.get("BNGE_ASSIST_WORKER") == "1":
+        pc.require_complete = True
+        pc.persist = None
+    if os.environ.get("BNGE_ASSIST_CONFIG") and not os.environ.get("BNGE_ASSIST_WORKER"):
+        import assistplans
+        assistplans.attach(pc, grader, cache_dir, widths, wet)
     return pc
 
 
@@ -102,6 +108,17 @@ class PlanCache:
         from roads import Spec
         try:
             src = self._path(key)
+            if getattr(self, "require_complete", False):
+                from worldbundle import MAX_ARTIFACT_BYTES, _read_completion, generator_identity, validate_artifact
+                with open(src, "rb") as fh:
+                    data = fh.read(MAX_ARTIFACT_BYTES + 1)
+                sources = self.source_versions() if self.source_versions else {}
+                _read_completion(src + ".complete", key, self.signature, hashlib.sha256(data).hexdigest(),
+                                 sources, generator_identity())
+                result = validate_artifact(data)
+                with self._lock:
+                    self.stats["read"] += 1
+                return result
             if not os.path.exists(src):
                 src = self._kept(key)
                 if src is None:
@@ -223,6 +240,15 @@ class PlanCache:
             with self._lock:
                 self.stats["waited"] += 1
         got, mine = xproc.once(self._path(key) + ".lock", lambda: self.load(key), WAIT_S, on_wait=waiting)
+        remote = getattr(self, "remote", None)
+        if got is None and mine and remote is not None:
+            shared = remote.fetch(key)
+            if shared is not None:
+                try:
+                    self.store(key, *shared, persist=False)
+                finally:
+                    self.release(key)
+                return shared, False
         if got is not None and time.monotonic() - t0 > xproc.POLL_S:
             with self._lock:
                 self.stats["wait_s"] += time.monotonic() - t0

@@ -36,6 +36,16 @@ class Capture:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_assistance_counters_survive_sanitization_without_endpoint_details(self):
+        import telemetry
+        pool = NS(stats=dict(assistRemote=12, assistFailed=2, assistDeferred=3, assistS=1.25),
+                  assistance=NS(stats={"bytes": 12345, "token": "must-not-record"}))
+        data = telemetry.clean_server(snapshot(NS(far_pool=pool), None))
+        self.assertEqual(data["assist_geometry_remote"], 12)
+        self.assertEqual(data["assist_geometry_ms"], 1250)
+        self.assertEqual(data["assist_received_bytes"], 12345)
+        self.assertNotIn("must-not-record", str(data))
+
     def setUp(self):
         self.now = 10.0
         self.cap = Capture()

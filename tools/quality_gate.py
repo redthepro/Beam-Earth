@@ -24,6 +24,7 @@ MODULES = (
     "test_prefetch_chain", "test_demand", "test_roadwidth", "test_roadcorners",
     "test_sketchfab_assets",
     "test_worldbundle", "test_world_cache", "test_peerwork",
+    "test_assistclient", "test_assistservice", "test_assistjobs", "test_assistplans",
     "test_host_package",
 )
 

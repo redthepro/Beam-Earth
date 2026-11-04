@@ -15,6 +15,32 @@ out locally while the bounded server job finishes and becomes reusable later.
 Performance and capacity must be measured with the intended route and player count.
 Offline transport tests do not demonstrate improved FPS or 100-player capacity.
 
+The legacy `--peers` helper is a separate implementation. It does not handle the
+current global terrain geometry and is not the recommended public deployment.
+Use the authenticated service and `--assist-config` described here.
+
+## What is offloaded
+
+- Global terrain geometry and anchor-relative visual terrain at level 1 or above.
+  The client validates every array, triangle index and finite coordinate before use.
+- Geographic road-grading plans in the existing common planning frame. Completed
+  plans can serve multiple clients and anchors; the local planner remains the fallback.
+- Road lookahead extends the existing prediction in ten-second steps to 90 seconds,
+  capped at 12 km and 24 requested cells. Two background threads admit at most four
+  lookahead requests per companion process. Turning or teleporting changes future
+  requests; already admitted server jobs may finish within the hard deadline.
+
+The foreground road planner waits at most 0.75 seconds for a compatible plan before
+continuing locally. Background preparation has a four-second response deadline;
+slow jobs can finish in the bounded server pool and serve a later request. Identical
+concurrent requests share one job. Source failures invalidate the helper's in-memory
+planning state; incomplete files cannot become trusted replies on a later retry.
+
+This does not move vehicle physics, graphics rendering, collision installation,
+near-ground terrain construction, imagery correction, bridge meshing or building
+placement off the client. It cannot repair malformed bridge geometry. It does not
+automatically select optimal client settings or prove that every job is cheaper remotely.
+
 ## Host setup from source
 
 Use the exact same server source and native version as participating clients.

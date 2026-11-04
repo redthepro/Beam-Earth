@@ -18,6 +18,13 @@ def snapshot(server, connection, lag_ms=0):
         out[field] = len(getattr(server, attr, ()))
     out["terrain_active"] = getattr(server, "hm_here", 0)
     out["imagery_failures"] = getattr(server, "imagery_failures", 0)
+    far = getattr(server, "far_pool", None)
+    shared = getattr(far, "stats", {})
+    for field, key in (("assist_geometry_remote", "assistRemote"), ("assist_geometry_failed", "assistFailed"),
+                       ("assist_geometry_deferred", "assistDeferred")):
+        out[field] = shared.get(key, 0)
+    out["assist_geometry_ms"] = shared.get("assistS", 0.0) * 1000
+    out["assist_received_bytes"] = getattr(getattr(far, "assistance", None), "stats", {}).get("bytes", 0)
     # Bounded history already maintained by earthd, in seconds. These are recent
     # completed tile timings, not latency percentiles for every desired tile.
     builds = tuple(getattr(server, "build_stats", ()))

@@ -3,6 +3,7 @@ import math
 import sys
 import types
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -46,6 +47,20 @@ def warm_fixture():
 
 
 class WarmAheadTest(unittest.TestCase):
+    def test_assistance_extends_bounded_corridor_without_changing_local_queue(self):
+        server, anchor, queue = warm_fixture()
+        local_server, local_anchor, local_queue = warm_fixture()
+        remote = Mock()
+        server.grader_for = lambda a: types.SimpleNamespace(shared=types.SimpleNamespace(remote=remote))
+        earthd.Server.warm_roads(server, anchor, 0, 0, 107.2896, 0)
+        earthd.Server.warm_roads(local_server, local_anchor, 0, 0, 107.2896, 0)
+        self.assertEqual(queue.items, local_queue.items)
+        keys = remote.prefetch.call_args.args[0]
+        self.assertLessEqual(len(keys), 24)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertGreater(max(x for x, y in anchor.frame.points), 9000)
+        self.assertLessEqual(max(math.hypot(x, y) for x, y in anchor.frame.points), 12000)
+
     def warm(self, x, y, vx, vy):
         server, anchor, queue = warm_fixture()
         earthd.Server.warm_roads(server, anchor, x, y, vx, vy)
