@@ -120,8 +120,8 @@ class DiagnosticsPackageTest(unittest.TestCase):
                         payloads = [cmd[i + 1] for i, value in enumerate(cmd[:-1]) if value == '--add-data']
                         mod_arg = next(value for value in payloads if value.endswith(build_app.SEP + 'mod/beamng_earth'))
                         stage = Path(mod_arg.rsplit(build_app.SEP, 1)[0])
-                    self.assertNotEqual(stage, source)
-                    self.assertTrue(stage.is_relative_to(work))
+                    self.assertNotEqual(stage.resolve(), source.resolve())
+                    self.assertTrue(stage.resolve().is_relative_to(work.resolve()))
                     self.assert_payload(contents(stage), ver)
                     self.assertEqual(contents(source), before)
 

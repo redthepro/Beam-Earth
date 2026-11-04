@@ -156,7 +156,7 @@ def far_geometry(*args):        # (the job's name is what the pool routes by)
 class FakeHelper:
     """A helper on a local port answering every job with a fixed Built (or refusing another code)."""
 
-    def __init__(self, code=None):
+    def __init__(self, code=None, hold_jobs=False):
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen()
@@ -167,6 +167,9 @@ class FakeHelper:
         self.port = self.srv.getsockname()[1]
         self.code = code or peerwork.code_id()
         self.jobs = []
+        self.release_jobs = threading.Event()
+        if not hold_jobs:
+            self.release_jobs.set()
         threading.Thread(target=self.run, daemon=True).start()
 
     def run(self):
@@ -188,6 +191,8 @@ class FakeHelper:
             while True:
                 h, _ = peerwork.recv_msg(s)
                 self.jobs.append(h["tile"])
+                if not self.release_jobs.wait(10):
+                    return
                 d, blobs = peerwork.built_msg(built(len(self.jobs)))
                 peerwork.send_msg(s, {"ok": True, "built": d}, blobs)
         except (ConnectionError, OSError, ValueError):
@@ -199,6 +204,7 @@ class FakeHelper:
 
     def close(self):
         self.closed.set()
+        self.release_jobs.set()
         self.srv.close()
         with self.lock:
             sockets = tuple(self.connections)
@@ -215,7 +221,7 @@ class PoolTest(unittest.TestCase):
         return (1, 39.28, -76.59, farfield.Tile(1, i, 0), 13, None, 14, True, farfield.Layout(64))
 
     def test_helper_used_then_local(self):
-        helper, local = FakeHelper(), LocalPool()
+        helper, local = FakeHelper(hold_jobs=True), LocalPool()
         self.addCleanup(helper.close)
         pool = peerwork.SharedFarPool(local, [("127.0.0.1", helper.port)], {"roads": True}, None)
         self.addCleanup(pool.shutdown)
@@ -224,7 +230,10 @@ class PoolTest(unittest.TestCase):
                 break
             threading.Event().wait(0.02)
         self.assertEqual(pool.remote_slots(), 2, "earthd keeps this many more far tiles in flight")
-        futs = [pool.submit(far_geometry, *self.args(i)) for i in range(4)]
+        try:
+            futs = [pool.submit(far_geometry, *self.args(i)) for i in range(4)]
+        finally:
+            helper.release_jobs.set()
         out = [f.result(10) for f in futs]
         remote = [o for o in out if isinstance(o, farfield.Built)]
         self.assertEqual(len(remote), 2, "the helper's two slots")
