@@ -255,9 +255,14 @@ def validate_artifact(data, artifact=None):
                 (group in ("z", "b") and a.ndim != 1)):
             raise BundleError("Array shape/count mismatch")
         if group == "c":
-            # Cuttings use all-NaN triples to indicate that a side has no wall.
+            # sharp_cuts emits (wall offset, top height, top offset). A drop
+            # constrains the road's shoulder without raising terrain: its
+            # offset is finite but both top fields are NaN. An absent cut is
+            # all NaN; other partial triples cannot be consumed safely.
             triples = a.reshape(-1, 3)
-            if not (np.isfinite(triples).all(axis=1) | np.isnan(triples).all(axis=1)).all():
+            drop = (np.isfinite(triples[:, 0]) & (triples[:, 0] >= 0)
+                    & np.isnan(triples[:, 1:]).all(axis=1))
+            if not (np.isfinite(triples).all(axis=1) | np.isnan(triples).all(axis=1) | drop).all():
                 raise BundleError("Invalid cutting sentinel")
         elif not np.isfinite(a).all():
             raise BundleError("Nonfinite geometry")

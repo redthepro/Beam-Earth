@@ -80,6 +80,39 @@ class BundleTest(unittest.TestCase):
         with self.assertRaises(wb.BundleError):
             pc.claim((14, 4001, 6000))
 
+    def test_native_descending_cliff_survives_export_and_runtime_pin(self):
+        import fast
+        plan = self.plan()
+        plan.z[:] = 10.
+        # Three probes per vertex, dropping away to the left and flat right.
+        ground = np.array([10., 5., 0.] * 3 + [10.] * 9)
+        plan.cut = fast._ef.sharp_cuts(ground, plan.z, np.array([3., 5., 7.]),
+                                       2., 3., 2., .3, 2., 2)
+        self.assertIsNotNone(plan.cut)
+        self.assertTrue(np.isfinite(plan.cut[:, 0]).all())
+        self.assertTrue(np.isnan(plan.cut[:, 1:]).all())
+        self.assertTrue(self.pc.store(KEY, [("cliff-road", plan)], [], [], [], persist=True))
+        artifact = Path(self.pc._path(KEY)).read_bytes()
+        state = wb.validate_artifact(artifact)
+        np.testing.assert_array_equal(state[0][0][1].cut, plan.cut)
+        manifest = self.export()
+        wb.validate_bundle(self.bundle, manifest["id"])
+        pinned = wb.PinnedPlanCache(self.bundle, "w0s0", {})
+        state, mine = pinned.claim(KEY)
+        self.assertFalse(mine)
+        np.testing.assert_array_equal(state[0][0][1].cut, plan.cut)
+
+    def test_invalid_partial_cuttings_still_rejected(self):
+        baseline = self.arrays()
+        for triple in ([np.nan, 2., 3.], [1., np.nan, 3.], [1., 2., np.nan],
+                       [-1., np.nan, np.nan], [np.inf, np.nan, np.nan],
+                       [1., np.inf, 3.], [np.nan, np.nan, 3.]):
+            for side in (0, 3):
+                cut = baseline["c"].copy()
+                cut[0, side:side + 3] = triple
+                with self.subTest(triple=triple, side=side), self.assertRaisesRegex(wb.BundleError, "cutting sentinel"):
+                    wb.validate_artifact(self.encoded({**baseline, "c": cut}))
+
     def test_export_rejects_incomplete_historical_and_stale_markers(self):
         p = self.write(False)
         with self.assertRaises(wb.BundleError):
