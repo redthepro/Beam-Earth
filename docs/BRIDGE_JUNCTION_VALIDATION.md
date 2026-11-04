@@ -126,3 +126,13 @@ quantized terrain, essentially unchanged from the baseline.
 The candidate improves the reproduced collision defect, but the steep underlying
 approach remains a separate investigation. Validate at low speed before normal
 driving; these results do not establish that the route is smooth at high speed.
+
+An isolated plan-removal diagnostic points to abutment protection/blending at a
+neighbouring road's grading-core boundary. That neighbouring target is about
+1.17 m higher at a distance of 7.236 m, almost exactly its 7.25 m core radius.
+Removing it diagnostically sharply reduces the analytic spike; removing banking,
+cutting data or separation does not. The native grader has a hard core-membership
+test when collecting protected abutment heights. A future correction should test
+continuous protection/blending while preserving genuinely separated roads and
+bridge abutments. Removing the neighbouring road or disabling those safeguards
+is not an accepted fix, and no native change is included in this candidate.
