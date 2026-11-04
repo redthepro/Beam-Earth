@@ -281,6 +281,8 @@ def _junction_surfaces(chunks, context=()):
             groups.append([(c, p)])
     out = {}
     for group in groups:
+        if any(c.get('jskip') for c, _p in group):
+            continue
         if not 3 <= len({c['fid'] for c, _p in group}) <= JUNCTION_MAX_BRANCHES:
             continue
         # Do not join a longer network through both ends of one part: each bounded fork gets one surface.
