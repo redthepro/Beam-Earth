@@ -626,16 +626,19 @@ class _Conn:
 
     def open(self):
         s = socket.create_connection((self.host, self.port), timeout=CONNECT_S)
-        s.settimeout(JOB_TIMEOUT_S)
-        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        send_msg(s, {"op": "hello", "protocol": PROTOCOL, "version": version(), "code": code_id()})
-        h, _ = recv_msg(s)
-        if not h.get("ok"):
-            s.close()
-            raise ConnectionError(f"{self.host}:{self.port}: {h.get('error', 'refused')} "
-                                  f"(theirs {h.get('version')} {h.get('code')}, ours {version()} {code_id()})")
         self.sock = s
-        return int(h.get("workers") or 1)
+        try:
+            s.settimeout(JOB_TIMEOUT_S)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            send_msg(s, {"op": "hello", "protocol": PROTOCOL, "version": version(), "code": code_id()})
+            h, _ = recv_msg(s)
+            if not h.get("ok"):
+                raise ConnectionError(f"{self.host}:{self.port}: {h.get('error', 'refused')} "
+                                      f"(theirs {h.get('version')} {h.get('code')}, ours {version()} {code_id()})")
+            return _int(h.get("workers", 1), 1, MAX_SLOTS, "helper workers")
+        except BaseException:
+            self.close()
+            raise
 
     def call(self, header):
         if self.sock is None:
@@ -648,12 +651,13 @@ class _Conn:
             raise
 
     def close(self):
-        if self.sock is not None:
+        sock, self.sock = self.sock, None
+        if sock is not None:
             try:
-                self.sock.close()
+                sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self.sock = None
+            sock.close()
 
 
 class SharedFarPool:
@@ -662,14 +666,19 @@ class SharedFarPool:
     (set_group) each job goes to its owner instead (the module's docstring); cache: the ReplyCache of the jobs built
     here (None: no group sharing)."""
 
-    def __init__(self, local, peers, settings, out_dir, cache=None):
+    def __init__(self, local, peers, settings, out_dir, cache=None, *, assistance=None, assist_cache_dir=None):
         self.local, self.settings, self.out_dir, self.cache = local, dict(settings), out_dir, cache
+        self.assistance, self.assist_cache_dir = assistance, assist_cache_dir
         self.free = queue.Queue()
         self.down = {}                      # (host, port) -> monotonic time it failed
         self.stats = {"remote": 0, "local": 0, "failed": 0,
                       "own": 0, "fromPeers": 0, "forPeers": 0, "cached": 0, "fallback": 0,
-                      "servedKept": 0, "servedBuilt": 0, "servedMiss": 0, "serveS": 0.0, "fetchS": 0.0}
+                      "servedKept": 0, "servedBuilt": 0, "servedMiss": 0, "serveS": 0.0, "fetchS": 0.0,
+                      "assistRemote": 0, "assistFailed": 0, "assistDeferred": 0, "assistS": 0.0}
         self.lock = threading.Lock()
+        self.closed = False
+        self._connections = set()
+        self._retry_timers = set()
         self.slots = 0                      # helper connections joined and not left out after a failure
         self.group = None                   # {"me", "ids" (sorted, us too), "addr": {id: (host, port)}, "conns"}
         self.member_down = {}               # member id -> monotonic time it failed (its tiles built here meanwhile)
@@ -689,21 +698,32 @@ class SharedFarPool:
                 self.down[(host, port)] = time.monotonic()
             return
         with self.lock:
+            if self.closed:
+                c.close()
+                return
             n = min(n, MAX_SLOTS - self.slots)
             self.slots += max(n, 0)
+            if n > 0:
+                self._connections.add(c)
         if n <= 0:
             c.close()
             return
         log.info("compute sharing: helper %s:%d joined (%d workers)", host, port, n)
         self.free.put(c)
         for _ in range(n - 1):
-            self.free.put(_Conn(host, port))
+            conn = _Conn(host, port)
+            with self.lock:
+                if self.closed:
+                    return
+                self._connections.add(conn)
+            self.free.put(conn)
 
     def remote_slots(self):
         """Far tiles the helpers and the group can build at once (earthd keeps its own workers' count plus these in
         flight)."""
         g = self.group
-        return min(MAX_SLOTS, self.slots + (GROUP_CONNS * (len(g["ids"]) - 1) if g else 0))
+        assistance = self.assistance.available_slots() if self.assistance is not None else 0
+        return min(MAX_SLOTS, assistance + self.slots + (GROUP_CONNS * (len(g["ids"]) - 1) if g else 0))
 
     def set_group(self, me, members, weights=None):
         """The players sharing our anchor: me (our id), members [(id, host, port)] (us among them or not), weights
@@ -877,10 +897,16 @@ class SharedFarPool:
 
     def _back(self, conn):
         with self.lock:
+            if self.closed:
+                conn.close()
+                return
             self.slots += 1
         self.free.put(conn)
 
     def submit(self, fn, *args, **kwargs):
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("cannot submit after shutdown")
         name = getattr(fn, "__name__", "")
         g = self.group
         if (g is not None or self.sharing) and self.cache is not None and name in JOBS and not kwargs:
@@ -896,6 +922,18 @@ class SharedFarPool:
 
     def _plain(self, fn, name, args, kwargs):
         """A free helper's, else the local pool's future of fn(*args)."""
+        geometry = (name == "far_global_geometry" or
+                    (name == "far_geometry" and len(args) > 3 and getattr(args[3], "level", -1) >= 1))
+        if (self.assistance is not None and not kwargs and geometry
+                and self.assistance.try_acquire()):
+            try:
+                future = self.io.submit(self._assisted, fn, name, args)
+            except BaseException:
+                self.assistance.release()
+                raise
+            # A queued task cancelled during shutdown never enters _assisted/call.
+            future.add_done_callback(lambda f: self.assistance.release() if f.cancelled() else None)
+            return future
         if name in JOBS and not kwargs:
             try:
                 conn = self.free.get_nowait()
@@ -906,6 +944,49 @@ class SharedFarPool:
         with self.lock:
             self.stats["local"] += 1
         return self.local.submit(fn, *args, **kwargs)
+
+    def _assisted(self, fn, name, args):
+        """Validated geometry only: imagery/collision installation retain their local paths."""
+        t0 = time.monotonic()
+        called = received = deferred = False
+        elapsed = None
+        try:
+            import assistjobs
+            request = assistjobs.make_request(name, args, self.settings, self.assist_cache_dir)
+            called = True     # call owns and releases the reservation even on failure
+            head, blobs = self.assistance.call(request, reserved=True)
+            if head.get("ok") is not True:
+                deferred = True
+                raise RuntimeError("Assistance result is not ready")
+            received = True
+            result = assistjobs.decode_result(name, head, blobs, request)
+            with self.lock:
+                self.stats["remote"] += 1
+                self.stats["assistRemote"] += 1
+            return result
+        except Exception:
+            elapsed = time.monotonic() - t0
+            if not called:
+                self.assistance.release()
+            elif received:
+                self.assistance.note_failure()
+            with self.lock:
+                if not deferred:
+                    self.stats["failed"] += 1
+                    self.stats["assistFailed"] += 1
+                else:
+                    self.stats["assistDeferred"] += 1
+                self.stats["local"] += 1
+                closed = self.closed
+                n = self.stats["assistFailed"]
+            if closed:
+                raise RuntimeError("assistance stopped during shutdown") from None
+            if not deferred and (n <= 3 or n % 50 == 0):
+                log.info("server assistance unavailable or incompatible; generating geometry locally")
+            return self.local.submit(fn, *args).result()
+        finally:
+            with self.lock:
+                self.stats["assistS"] += elapsed if elapsed is not None else time.monotonic() - t0
 
     def _remote(self, conn, fn, name, args):
         try:
@@ -926,21 +1007,50 @@ class SharedFarPool:
                 out = (built, got)
             with self.lock:
                 self.stats["remote"] += 1
-            self.free.put(conn)
+                closed = self.closed
+            if closed:
+                conn.close()
+            else:
+                self.free.put(conn)
             return out
         except Exception as e:
             with self.lock:
                 self.stats["failed"] += 1
-                self.slots -= 1
+                self.slots = max(0, self.slots - 1)
                 n = self.stats["failed"]
             if n <= 3 or n % 50 == 0:
                 log.warning("compute sharing: %s at %s:%d failed (%s); built here", name, conn.host, conn.port, e)
             conn.close()
-            threading.Timer(HELPER_RETRY_S, self._back, args=(conn,)).start()
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("helper stopped during shutdown") from None
+                timer = None
+
+                def retry():
+                    with self.lock:
+                        self._retry_timers.discard(timer)
+                    self._back(conn)
+                timer = threading.Timer(HELPER_RETRY_S, retry)
+                timer.daemon = True
+                self._retry_timers.add(timer)
+                timer.start()
             return self.local.submit(fn, *args).result()
 
     def shutdown(self, *a, **kw):
-        self.io.shutdown(wait=False)
+        with self.lock:
+            self.closed = True
+            timers = tuple(self._retry_timers)
+            self._retry_timers.clear()
+            connections = tuple(self._connections)
+            self._connections.clear()
+            self.slots = 0
+        for timer in timers:
+            timer.cancel()
+        for conn in connections:
+            conn.close()
+        if self.assistance is not None:
+            self.assistance.close()
+        self.io.shutdown(wait=False, cancel_futures=True)
         return self.local.shutdown(*a, **kw)
 
 

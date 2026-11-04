@@ -7,6 +7,7 @@ import tempfile
 from unittest import mock
 import sys
 import threading
+import types
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
@@ -36,6 +37,8 @@ def header(**over):
 class WireTest(unittest.TestCase):
     def test_frames_round_trip(self):
         a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
         peerwork.send_msg(a, {"op": "x", "n": 3}, [b"abc", b""])
         h, blobs = peerwork.recv_msg(b)
         self.assertEqual((h, blobs), ({"op": "x", "n": 3}, [b"abc", b""]))
@@ -142,6 +145,9 @@ class LocalPool:
         f.set_result(("local", args[3].key))
         return f
 
+    def shutdown(self, *args, **kw):
+        pass
+
 
 def far_geometry(*args):        # (the job's name is what the pool routes by)
     raise AssertionError("not called here")
@@ -154,17 +160,25 @@ class FakeHelper:
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen()
+        self.srv.settimeout(.1)
+        self.closed = threading.Event()
+        self.connections = set()
+        self.lock = threading.Lock()
         self.port = self.srv.getsockname()[1]
         self.code = code or peerwork.code_id()
         self.jobs = []
         threading.Thread(target=self.run, daemon=True).start()
 
     def run(self):
-        while True:
+        while not self.closed.is_set():
             try:
                 s, _ = self.srv.accept()
+            except socket.timeout:
+                continue
             except OSError:
                 return
+            with self.lock:
+                self.connections.add(s)
             threading.Thread(target=self.conn, args=(s,), daemon=True).start()
 
     def conn(self, s):
@@ -178,6 +192,22 @@ class FakeHelper:
                 peerwork.send_msg(s, {"ok": True, "built": d}, blobs)
         except (ConnectionError, OSError, ValueError):
             pass
+        finally:
+            with self.lock:
+                self.connections.discard(s)
+            s.close()
+
+    def close(self):
+        self.closed.set()
+        self.srv.close()
+        with self.lock:
+            sockets = tuple(self.connections)
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
 
 
 class PoolTest(unittest.TestCase):
@@ -186,7 +216,9 @@ class PoolTest(unittest.TestCase):
 
     def test_helper_used_then_local(self):
         helper, local = FakeHelper(), LocalPool()
+        self.addCleanup(helper.close)
         pool = peerwork.SharedFarPool(local, [("127.0.0.1", helper.port)], {"roads": True}, None)
+        self.addCleanup(pool.shutdown)
         for _ in range(100):
             if pool.free.qsize() == 2:
                 break
@@ -201,7 +233,9 @@ class PoolTest(unittest.TestCase):
 
     def test_other_code_not_used(self):
         helper, local = FakeHelper(code="another-0"), LocalPool()
+        self.addCleanup(helper.close)
         pool = peerwork.SharedFarPool(local, [("127.0.0.1", helper.port)], {}, None)
+        self.addCleanup(pool.shutdown)
         threading.Event().wait(0.3)
         self.assertEqual((pool.free.qsize(), pool.remote_slots()), (0, 0))
         self.assertEqual(pool.submit(far_geometry, *self.args(0)).result(5), ("local", "1_0_0"))
@@ -370,6 +404,167 @@ class SharedRenderingTest(unittest.TestCase):
 def worker_rendering_mode():
     import roads
     return roads.ROADS_IN_GROUND
+
+
+class AssistanceTest(unittest.TestCase):
+    """The modern global geometry path uses assistance; failed work remains playable locally."""
+
+    class Local:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+
+        def submit(self, fn, *args, **kw):
+            self.calls.append((fn.__name__, args, kw))
+            result = Future()
+            result.set_result("local geometry")
+            return result
+
+        def shutdown(self, *args, **kw):
+            self.closed = True
+
+    class Assistance:
+        def __init__(self):
+            self.gate = threading.BoundedSemaphore(1)
+            self.closed = False
+            self.calls = []
+            self.error = False
+            self.rejected = 0
+
+        def try_acquire(self):
+            return not self.closed and self.gate.acquire(blocking=False)
+
+        def release(self):
+            self.gate.release()
+
+        def available_slots(self):
+            return 0 if self.closed else 1
+
+        def call(self, header, *, reserved=False):
+            assert reserved
+            try:
+                self.calls.append(header)
+                if self.error:
+                    raise ConnectionError("remote down")
+                return {"ok": True}, [b"geometry"]
+            finally:
+                self.release()
+
+        def note_failure(self):
+            self.rejected += 1
+
+        def close(self):
+            self.closed = True
+
+    def setUp(self):
+        self.local = self.Local()
+        self.assist = self.Assistance()
+        self.pool = peerwork.SharedFarPool(self.local, [], {"roads": True}, None,
+                                           assistance=self.assist, assist_cache_dir="cache-dir")
+        self.addCleanup(self.pool.shutdown)
+        self.jobs = types.SimpleNamespace(make_request=mock.Mock(return_value={"op": "far_global_geometry"}),
+                                         decode_result=mock.Mock(return_value="remote geometry"))
+        self.module = mock.patch.dict(sys.modules, {"assistjobs": self.jobs})
+        self.module.start()
+        self.addCleanup(self.module.stop)
+
+    @staticmethod
+    def far_global_geometry(*args):
+        raise AssertionError("runs in worker")
+
+    @staticmethod
+    def far_tile(*args):
+        raise AssertionError("runs in worker")
+
+    def test_global_geometry_offloaded_with_context(self):
+        args = (10, 100, 200, 13, 14, farfield.Layout(64))
+        self.assertEqual(self.pool.submit(self.far_global_geometry, *args).result(2), "remote geometry")
+        self.jobs.make_request.assert_called_once_with("far_global_geometry", args, {"roads": True}, "cache-dir")
+        self.jobs.decode_result.assert_called_once_with("far_global_geometry", {"ok": True}, [b"geometry"],
+                                                        {"op": "far_global_geometry"})
+        self.assertEqual(self.local.calls, [])
+        self.assertEqual(self.pool.stats["assistRemote"], 1)
+        self.assertEqual(self.pool.remote_slots(), 1)
+
+    def test_saturated_helper_does_not_queue(self):
+        self.assertTrue(self.assist.try_acquire())
+        try:
+            self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+            self.assertEqual(self.assist.calls, [])
+        finally:
+            self.assist.release()
+
+    def test_failed_helper_falls_back_and_returns_slot(self):
+        self.assist.error = True
+        self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.assertEqual(self.pool.stats["assistFailed"], 1)
+        self.assertEqual(len(self.local.calls), 1)
+        self.assertTrue(self.assist.try_acquire())
+        self.assist.release()
+
+    def test_invalid_result_falls_back_and_backs_off(self):
+        self.jobs.decode_result.side_effect = ValueError("invalid geometry")
+        self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.assertEqual(self.assist.rejected, 1)
+
+    def test_request_context_failure_returns_reservation(self):
+        self.jobs.make_request.side_effect = ValueError("source context unavailable")
+        self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.assertEqual(self.assist.calls, [])
+        self.assertTrue(self.assist.try_acquire())
+        self.assist.release()
+
+    def test_imagery_stays_local(self):
+        self.assertEqual(self.pool.submit(self.far_tile, 1).result(2), "local geometry")
+        self.assertEqual(self.assist.calls, [])
+        self.jobs.make_request.assert_not_called()
+
+    def test_near_collision_geometry_stays_local(self):
+        args = (1, 39.28, -76.59, farfield.Tile(0, 0, 0), 13, None, 14, True, farfield.Layout(64))
+        self.assertEqual(self.pool.submit(far_geometry, *args).result(2), "local geometry")
+        self.assertEqual(self.assist.calls, [])
+        self.jobs.make_request.assert_not_called()
+
+    def test_pending_falls_back_without_poisoning_helper(self):
+        def pending(header, *, reserved=False):
+            self.assist.release()
+            return {"ok": False, "error": "pending"}, []
+        self.assist.call = pending
+        self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.assertEqual(self.assist.rejected, 0)
+        self.assertEqual(self.pool.stats["assistFailed"], 0)
+        self.assertEqual(self.pool.stats["assistDeferred"], 1)
+
+    def test_shutdown_closes_assistance_and_refuses_new_jobs(self):
+        self.pool.shutdown()
+        self.assertTrue(self.assist.closed)
+        self.assertTrue(self.local.closed)
+        self.assertEqual(self.pool.remote_slots(), 0)
+        with self.assertRaises(RuntimeError):
+            self.pool.submit(self.far_global_geometry, 1)
+
+    def test_cancelled_queued_task_returns_reservation(self):
+        pending = Future()
+        with mock.patch.object(self.pool.io, "submit", return_value=pending):
+            future = self.pool.submit(self.far_global_geometry, 1)
+        self.assertFalse(self.assist.try_acquire())
+        self.assertTrue(future.cancel())
+        self.assertTrue(self.assist.try_acquire())
+        self.assist.release()
+
+    def test_legacy_retry_timer_is_daemon_and_cancelled_on_shutdown(self):
+        conn = mock.Mock(host="127.0.0.1", port=1)
+        conn.call.side_effect = ConnectionError("gone")
+        args = (1, 39.28, -76.59, farfield.Tile(1, 0, 0), 13, None, 14, True, farfield.Layout(64))
+        self.pool.slots = 1
+        self.pool._connections.add(conn)
+        self.assertEqual(self.pool._remote(conn, far_geometry, "far_geometry", args), "local geometry")
+        timers = tuple(self.pool._retry_timers)
+        self.assertEqual(len(timers), 1)
+        self.assertTrue(timers[0].daemon)
+        self.pool.shutdown()
+        self.assertTrue(timers[0].finished.is_set())
+        self.assertEqual(self.pool._retry_timers, set())
 
 
 if __name__ == "__main__":
