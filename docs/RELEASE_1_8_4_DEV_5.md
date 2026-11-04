@@ -1,4 +1,4 @@
-# 1.8.4-dev.5 candidate: bridge junctions and optional server assistance
+# 1.8.4-dev.5: bridge junctions and optional server assistance
 
 This development candidate targets reproduced bridge collision defects and lets
 an opt-in client reuse work from a separate geographic helper. It requires a new
@@ -98,7 +98,12 @@ Versioned source and BeamMP plugin packages were generated successfully at
 or evidence of a gameplay session. Windows frozen-build verification and the
 final helper synchronization are recorded with the delivered artifact.
 
-## Compiled candidate and delivery
+## Earlier local candidate and delivery
+
+The local candidate below predates the final launcher correction described in the
+next section. Its hash is retained as historical test evidence; it is **not the
+published Windows download**. Use the prerelease's `SHA256SUMS.txt` for published
+artifacts. The Windows executable is rebuilt for publication after the correction.
 
 The Windows executable was compiled in an isolated checkout at
 `01484f26f6e3b88ee25f56c33d5d1cca1ade39f8`. All 34 native/build input hashes
@@ -129,3 +134,23 @@ shutdown. Its logs/process evidence were preserved and that specific leftover wa
 terminated before handoff. This cleanup is not a fix for the underlying shutdown
 leak. The later terrain-grid replay also confirms a remaining steep approach;
 see the bridge report before treating this candidate as gameplay-verified.
+
+## Publication correction: preserve unknown Windows process status
+
+Upstream PR review exposed a remaining launcher defect. A `tasklist` timeout
+returned an empty process list, which the watcher interpreted as the game closing.
+A reproducible fixture kept the game alive until 20 seconds but the old watcher
+reported closure at eight seconds after two timed-out scans.
+
+Process inspection now distinguishes present, confirmed absent and unknown.
+Failed, empty or malformed scans reset the absence timers and preserve the world
+server. Confirmed absence still uses the normal exit grace; the same fixture now
+reports closure at 23 seconds. An actual world-server exit still ends the watcher.
+Before startup mutations, three unsuccessful scans produce retry guidance without
+changing the game, mod or existing services. A later confirmed result follows the
+normal startup path.
+
+The focused Windows lifecycle module passed all 26 tests. The cross-platform
+launcher module ran 52 cases: 41 passed and 11 explicit platform skips on Windows.
+This fixes a reproduced premature companion shutdown; it does not prove a fix for
+native crashes or every windowless BeamNG process left after game shutdown.

@@ -4,7 +4,7 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Release: 1.8.3 (see VERSION). Upstream runtime baseline: BeamNG.drive 0.40.4 on Linux (Vulkan) and 0.40.3 on the Steam Deck. See
+Stable release: 1.8.3. Development build: 1.8.4-dev.5 (see VERSION and [development notes](docs/RELEASE_1_8_4_DEV_5.md)). Upstream runtime baseline: BeamNG.drive 0.40.4 on Linux (Vulkan) and 0.40.3 on the Steam Deck. See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
 **Modernization branch:** current changes, architecture, measured results and remaining work are tracked in

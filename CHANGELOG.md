@@ -2,7 +2,7 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
-## 1.8.4-dev.5 (local development candidate, unpublished)
+## 1.8.4-dev.5 (2026-11-03, development prerelease)
 
 - Give eligible short bridge forks a shared collision/asphalt surface, remove filler pads from
   connecting ground carriageways, and keep junction pads and parapet openings on their elevation layer.
@@ -13,6 +13,8 @@ What changed in each release of BeamNG.Earth, newest first.
   client FPS and low-spec performance gains remain unmeasured.
 - Rebuild damaged road-plan caches instead of aborting grading. Accept valid native cliff constraints
   in shared plans, reject changed source metadata and preserve helper state on compatibility refusals.
+- Treat failed Windows process scans as unknown, so temporary query timeouts cannot stop the world
+  server under a live game. Retry before startup mutations and retain confirmed-exit cleanup.
 - Harden streamed audio inputs and water initialization, scope spawn filtering, and add development-only
   audio isolation and assistance counters. Production excludes the detailed capture provider.
 - Expand automated bridge regression gates. This candidate does not establish native crash resolution;
