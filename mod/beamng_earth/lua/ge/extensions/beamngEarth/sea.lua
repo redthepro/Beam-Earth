@@ -177,6 +177,9 @@ local function makePhys(p, z)
   local o = createObject('WaterBlock')
   setGridSize(o, M.PHYS_SIZE)
   for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
+  -- Registration initializes textures even when rendering is disabled below.
+  -- Share visible water's valid paths to avoid three empty-texture errors per block.
+  for _, x in ipairs(TEXTURES) do o:setField(x[1], 0, exists(x[2]) and x[2] or x[3]) end
   o:setField('gridElementSize', 0, tostring(M.PHYS_SIZE / 16))
   o:setPosition(vec3(p.x, p.y, z))
   o:setScale(vec3(M.PHYS_SIZE, M.PHYS_SIZE, M.DEPTH_M))

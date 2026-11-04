@@ -8,8 +8,10 @@
 -- changes (each write is a file event and a rebuilt level list).
 --
 -- The spawn point the player picks is saved by the game (setSpawnpoint.setDefaultSP, settings/cloud/game-state.json
--- levels.beamng_earth.defaultSpawnPointName); our level has no SpawnSphere of those names, the car starts at the
--- default one, and core's start teleport goes to the place it names (M.chosen).
+-- levels.beamng_earth.defaultSpawnPointName). Saved places and Random are geographic selectors, not physical
+-- SpawnSpheres: the stock spawn loader uses spawn_default, and core's start teleport resolves M.chosen.
+-- They must not become stock in-map fast-travel POIs at a fabricated local position. The scoped adapter below
+-- excludes only missing Earth selectors from that scan; menu choices and real spawn objects stay intact.
 
 local M = {}
 
@@ -129,6 +131,62 @@ function M.placeId(name)
   return id and tonumber(id) or nil
 end
 
-function M._reset() last, asked = nil, {} end -- tests
+-- BeamNG 0.40 core_levels.onGetRawPoiListForLevel resolves every advertised objectname,
+-- logging an error for our virtual selectors on each POI refresh. There is no per-row
+-- opt-out in that callback, and a second POI hook cannot prevent its errors. The
+-- callback is synchronous: lend it a filtered list, then restore the exact cached
+-- table even on failure. Never mutate info.json or selected-spawn state for this.
+local poiHook
+local unpackValues = table.unpack or unpack
+local function pack(...) return { n = select('#', ...), ... } end
+
+function M.unhookPoiFilter()
+  local h = poiHook
+  if not h then return end
+  h.active, poiHook = false, nil
+  if h.owner.onGetRawPoiListForLevel == h.wrapper then
+    h.owner.onGetRawPoiListForLevel = h.original
+    local ext = rawget(_G, 'extensions')
+    if ext and type(ext.refresh) == 'function' then pcall(ext.refresh, 'core_levels') end
+  end
+end
+
+function M.hookPoiFilter()
+  local owner, ext = rawget(_G, 'core_levels'), rawget(_G, 'extensions')
+  if type(owner) ~= 'table' or type(owner.getLevelByName) ~= 'function'
+    or type(owner.onGetRawPoiListForLevel) ~= 'function'
+    or not ext or type(ext.refresh) ~= 'function' then return false end
+  if poiHook and poiHook.owner == owner and owner.onGetRawPoiListForLevel == poiHook.wrapper then return true end
+  M.unhookPoiFilter()
+  local h = { owner = owner, original = owner.onGetRawPoiListForLevel, active = true }
+  h.wrapper = function(level, elements)
+    if not h.active or level ~= M.LEVEL then return h.original(level, elements) end
+    local info = owner.getLevelByName(level)
+    local points = type(info) == 'table' and info.spawnPoints
+    if type(points) ~= 'table' then return h.original(level, elements) end
+    local filtered, omitted = {}, false
+    for _, point in ipairs(points) do
+      local name = type(point) == 'table' and point.objectname
+      local virtual = name == M.RANDOM or M.placeId(name) ~= nil
+      local exists = virtual and scenetree and scenetree.findObject and scenetree.findObject(name)
+      if virtual and not exists then omitted = true else filtered[#filtered + 1] = point end
+    end
+    if not omitted then return h.original(level, elements) end
+    info.spawnPoints = filtered
+    local result = pack(pcall(h.original, level, elements))
+    info.spawnPoints = points
+    if not result[1] then error(result[2], 0) end
+    return unpackValues(result, 2, result.n)
+  end
+  owner.onGetRawPoiListForLevel = h.wrapper
+  poiHook = h
+  -- extensions.hook caches function pointers; replacing the export alone leaves
+  -- an already-built hook list calling the original scan indefinitely.
+  local ok, refreshed = pcall(ext.refresh, 'core_levels')
+  if not ok or refreshed == false then M.unhookPoiFilter(); return false end
+  return true
+end
+
+function M._reset() last, asked = nil, {}; M.unhookPoiFilter() end -- tests
 
 return M

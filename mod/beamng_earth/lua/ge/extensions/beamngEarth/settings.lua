@@ -29,6 +29,7 @@ local ui = require('beamngEarth/ui')
 local net = require('beamngEarth/net')
 local credits = require('beamngEarth/credits')
 local places = require('beamngEarth/places')
+local buildinfo = require('beamngEarth/buildinfo')
 
 M.FILE = '/settings/beamngEarth.json'
 M.VERSION = 1
@@ -114,6 +115,8 @@ M.SCHEMA = {
   -- not on the page: the newer version whose update notice the player dismissed (core.lua drawUpdateNotice)
   updateDismissed = { kind = 'string', default = '', maxLen = 40, label = 'Update notice dismissed (version)' },
   devNoticeSeen = { kind = 'string', default = '', maxLen = 40, label = 'Development build notice seen (version)' },
+  -- Dev-only, next-level isolation of streamed sound objects; never changes a live audio scene.
+  devStreamedAudio = { kind = 'bool', default = true, label = 'Streamed environmental sounds' },
 }
 M.ORDER = { 'quality', 'framePacing', 'terrainDetail', 'groundPhoto', 'trees', 'treeDistance', 'buildingDistance', 'objectDetail',
   'grassDistance', 'nightLights', 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
@@ -123,7 +126,8 @@ M.ORDER = { 'quality', 'framePacing', 'terrainDetail', 'groundPhoto', 'trees', '
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'routeDownload', 'devOutlineKm', 'devMapKm' }
 
 -- Stored but not on the settings page
-M.HIDDEN = { welcomeSeen = true, updateDismissed = true, devNoticeSeen = true, qualityDetected = true }
+M.HIDDEN = { welcomeSeen = true, updateDismissed = true, devNoticeSeen = true, qualityDetected = true,
+  devStreamedAudio = true }
 
 -- The quality presets: each sets these knobs at once ('high' = the defaults before presets existed, 2026-10-28). A
 -- Steam Deck on Handheld in a forest (Patapsco, 2026-10-28): low 37.0 fps, high 31.5, ultra 30.9; 'medium' (its first-run
@@ -482,6 +486,10 @@ M.APPLY = {
     local dev = ext('beamngEarth_dev')
     if dev and dev.setParam then dev.setParam('mapKm', v) end
   end,
+  devStreamedAudio = function(v)
+    -- A stable package always enables these sounds, even after using a dev isolation run.
+    require('beamngEarth/ambience').setStreamedAudioEnabled(not buildinfo.devDiagnostics or v ~= false)
+  end,
   -- hazeStrength: a placeholder until the haze exists (v1.4 M1h)
 }
 
@@ -494,10 +502,14 @@ end
 
 function M.applyAll()
   for _, k in ipairs(M.ORDER) do if k ~= 'hudVisible' then M.apply(k) end end
+  M.apply('devStreamedAudio')
 end
 
 -- Validate, store, save and apply one value. Returns { ok, value, error }.
 function M.set(key, v)
+  if key == 'devStreamedAudio' and not buildinfo.devDiagnostics then
+    return { ok = false, error = 'audio isolation is available in development builds only', value = true }
+  end
   local val, err = M.validate(key, v)
   if val == nil then return { ok = false, error = err, value = values[key] } end
   if key == 'quality' then
@@ -568,6 +580,7 @@ function M.uiState()
     banner = core and core.banner and core.banner() or nil,
     update = core and core.updateInfo and core.updateInfo() or nil,  -- a newer version on GitHub
     telemetry = core and core.telemetryStatus and core.telemetryStatus() or nil,
+    streamedAudio = buildinfo.devDiagnostics and require('beamngEarth/ambience').streamedAudioState() or nil,
   }
   -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')

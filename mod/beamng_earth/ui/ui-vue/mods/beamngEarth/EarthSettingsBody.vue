@@ -28,6 +28,17 @@
       <div class="earth-note">{{ telemetryMessage }}</div>
       <div class="earth-note">Records frame-time histograms, worst hitches, speed, Lua memory and world-loading queues about once a second. Straight-line road readiness is an estimate, not a guarantee of collision coverage. Pause-menu time remains visible in the capture.</div>
       <div class="earth-note">Press Ctrl+Shift+T while driving to mark a stutter without opening this page. Stop after reproducing the issue. The companion's telemetry folder keeps bounded session files, including samples written before a game crash. Reconnecting requires starting a new capture.</div>
+      <template v-if="streamedAudio">
+        <BngRow><template #label>Streamed environmental sounds (next level)</template>
+          <BngSwitch :modelValue="streamedAudio.requested" @update:modelValue="setStreamedAudio" />
+        </BngRow>
+        <div class="earth-note">Optional crash-isolation test. Disables streamed sound zones and point sources on your next Earth level load. Vehicle sounds, rain, rivers and background ambience stay enabled. Default: on.</div>
+        <div class="earth-note">Active sound mode: {{ streamedAudio.active ? 'enabled' : 'disabled' }}.
+          Next level: {{ streamedAudio.requested ? 'enabled' : 'disabled' }}.
+          <template v-if="streamedAudio.pending">Return to the main menu and load Earth again to apply this change. Reconnecting does not apply it.</template>
+        </div>
+        <div v-if="audioIsolationMessage" class="earth-note is-error">{{ audioIsolationMessage }}</div>
+      </template>
     </template>
 
     <!-- Quality presets: one press sets every setting below; changing one makes it Custom -->
@@ -148,6 +159,7 @@ import {
   setQuality, presetName, valueOf, selectOption, onSwitchChange, onSliderChange, onNumberEnter, onDevChange, infoValue,
   openFeedback,
   telemetry, telemetryCoordinates, telemetryMessage, captureAction, setTelemetryCoordinates,
+  streamedAudio, audioIsolationMessage, setStreamedAudio,
   confirmClearCache, askClearCache, usePath, sendPath, pathNote, typing, applyDevPreset,
 } from "./earthSettingsStore.js"
 

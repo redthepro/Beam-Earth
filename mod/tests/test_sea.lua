@@ -4,10 +4,19 @@ local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
 
 local realCreate = createObject
+local waterTextureFields = { 'rippleTex', 'depthGradientTex', 'foamTex' }
 createObject = function(class)
   local o = realCreate(class)
   function o:getId() return self.id end
   function o:setScale(s) self.scale = vec3(s.x, s.y, s.z) end
+  local register = o.registerObject
+  function o:registerObject(name)
+    if class == 'WaterBlock' then
+      self.texturesAtRegistration = {}
+      for _, field in ipairs(waterTextureFields) do self.texturesAtRegistration[field] = self.fields[field] end
+    end
+    return register(self, name)
+  end
   return o
 end
 local car = { pos = vec3(100, 100, -1), nudged = 0 }
@@ -55,6 +64,11 @@ T.check(car.nudged >= 1, 'a parked car inside a new tile is re-placed (its physi
 local pb = physBlock()
 T.check(pb and pb.renderEnabled == false and pb.pos.x == 100 and math.abs(pb.pos.z) < 0.01 and pb.scale.x == sea.PHYS_SIZE,
   'a physics block around the player at the level of its tile, not drawn')
+for _, field in ipairs(waterTextureFields) do
+  T.check(pb and pb.texturesAtRegistration[field] ~= nil
+    and pb.texturesAtRegistration[field] == t0.texturesAtRegistration[field],
+    'hidden physics water has shared ' .. field .. ' before registration')
+end
 local made0 = sea.physMade
 sea.update(1, player)
 T.check(sea.physMade == made0 + 1, 'made again once the batch of new tiles is done')
@@ -158,5 +172,28 @@ T.check(physBlock() ~= nil, 'still water under the player')
 sea.onMessage({ type = 'sea', anchorId = 5, tiles = { tile('b', 0, 0, 0, 512) } })
 sea.update(5, p4); sea.update(5, p4)
 T.check(blocks()[sea.PREFIX .. 'a'] == nil and blocks()[sea.PREFIX .. 'b'] ~= nil, 'the server\'s new set replaces it')
+
+-- Without East Coast's textures, hidden physics water uses the same bundled
+-- stock fallback paths as visible water, before native texture initialization.
+sea.clear()
+local fileExists = FS.fileExists
+FS.fileExists = function(_, path) return path:sub(1, 8) ~= '/levels/' end
+sea.onMessage({ type = 'sea', anchorId = 6, tiles = { tile('fallback', 100, 100, 0, 512) } })
+sea.update(6, p4)
+local fallback = physBlock()
+local drawn = blocks()[sea.PREFIX .. 'fallback']
+local expected = {
+  rippleTex = '/assets/materials/tileable/water/water_effects/ripple_nm.normal.dds',
+  depthGradientTex = '/assets/materials/tileable/water/depthcolor_ramp/river_depthcolor_ramp_b.png',
+  foamTex = '/assets/materials/tileable/water/water_effects/foam_b.color.dds',
+}
+for field, path in pairs(expected) do
+  T.check(fallback and fallback.texturesAtRegistration[field] == path
+    and drawn and drawn.texturesAtRegistration[field] == path,
+    'physics and visible water register with existing fallback ' .. field)
+end
+T.check(fallback and fallback.renderEnabled == false, 'fallback textures do not enable physics-water rendering')
+FS.fileExists = fileExists
+sea.clear()
 
 T.done('test_sea')

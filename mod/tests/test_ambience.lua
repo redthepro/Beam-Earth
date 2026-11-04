@@ -283,4 +283,122 @@ beamngEarth_weather = nil
 
 amb.clear()
 T.check(#S.liveOf('SFXEmitter') == 0 and af.enabled == false, 'clear: the room tone goes')
+
+do -- Malformed streamed rows must never reach native transforms or dimensions.
+  local function row() return { 0, 0, 0, 0, 40, 10, 10, 0 } end
+  amb.reset()
+  local before = amb.spaceStats()
+  local malformed = {}
+  local function add(r) for _, value in ipairs(r) do malformed[#malformed + 1] = value end end
+  for field = 2, 8 do
+    for _, value in ipairs({ 0 / 0, math.huge, -math.huge, 'not-a-number' }) do
+      local r = row(); r[field] = value; add(r)
+    end
+  end
+  for field = 5, 7 do
+    for _, value in ipairs({ 0, -1 }) do local r = row(); r[field] = value; add(r) end
+  end
+  amb.onSpaces('malformed', malformed)
+  T.check(amb.spaceStats().created == before.created and amb.spaceStats().live == 0,
+    'nonfinite/non-numeric rows and nonpositive boxes create no native sound objects')
+  T.check(not amb.inTunnel(0, 0, 0) and #amb.tunnelLights() == 0,
+    'invalid geometry cannot enter rain shelter or tunnel-light calculations')
+  add(row())
+  add({ 4, 5, 0, 0, 0, 0, 0, 0 })
+  amb.placeSpaces('malformed', malformed)
+  T.check(amb.spaceStats().live == 2 and #S.liveOf('SFXSpace') == 1 and #S.liveOf('SFXEmitter') == 1,
+    'valid neighboring box and zero-dimension point emitter survive invalid rows')
+  local invalidReplacement = row(); invalidReplacement[8] = math.huge
+  amb.placeSpaces('malformed', invalidReplacement)
+  T.check(amb.spaceStats().live == 0 and #amb.tunnelLights() == 0,
+    'invalid replacement retires stale rows without placing bad native geometry')
+  amb.reset()
+end
+
+do -- Diagnostic isolation changes only streamed sound objects, at a level boundary.
+  local function rows(x)
+    return { 0, x, 0, 0, 40, 10, 10, 0, 4, x, 0, 0, 0, 0, 0, 0 }
+  end
+  local initial = amb.streamedAudioState()
+  T.check(initial.requested and initial.active and not initial.pending, 'streamed audio defaults to enabled')
+  T.check(not amb.setStreamedAudioEnabled('false') and amb.streamedAudioState().requested,
+    'isolation configuration rejects non-boolean values')
+  amb.setStreamedAudioEnabled(false)
+  local before = amb.spaceStats()
+  amb.onSpaces('isolated', rows(0))
+  local state = amb.streamedAudioState()
+  T.check(not state.requested and not state.active and not state.pending,
+    'request before first sound tile activates isolation')
+  T.check(amb.spaceStats().created == before.created and amb.spaceStats().live == 0,
+    'isolated spaces and point emitters create no native sound objects')
+  T.check(amb.inTunnel(0, 0, 0) and #amb.tunnelLights() == 2,
+    'isolation retains rain shelter and tunnel-light geometry')
+
+  amb.setStreamedAudioEnabled(true)
+  state = amb.streamedAudioState()
+  T.check(state.requested and not state.active and state.pending,
+    'changing the setting while driving is pending, without enabling live objects')
+  amb.placeSpaces('isolated', rows(100))
+  T.check(amb.inTunnel(100, 0, 0) and not amb.inTunnel(0, 0, 0),
+    'isolated same-count remap updates logical geometry')
+  amb.placeSpaces('isolated', { 2, 150, 0, 0, 40, 10, 10, 0 })
+  amb.transform({ apply = function(_, x, y, z) return x + 1000, y, z end })
+  T.check(amb.inTunnel(1150, 0, 0) and #amb.tunnelLights() == 2,
+    'isolated kind/count replacements and rebases retain correct geometry')
+  local after = amb.spaceStats()
+  T.check(after.created == before.created and after.deleted == before.deleted and after.moved == before.moved,
+    'logical isolation updates do not create, delete, or move native sound objects')
+  amb.dropSpaces('isolated')
+  amb.dropSpaces('isolated')
+  T.check(amb.spaceStats().live == 0 and #amb.tunnelLights() == 0,
+    'isolated repeated drops clear geometry without decrementing nonexistent objects')
+  amb.clear()
+  amb.onSpaces('reconnected', rows(0))
+  T.check(not amb.streamedAudioState().active and amb.streamedAudioState().pending and amb.spaceStats().live == 0,
+    'disconnect/reconnect retains isolation despite a pending enable request')
+
+  amb.reset()
+  state = amb.streamedAudioState()
+  T.check(state.active and not state.pending, 'level reset admits the pending enabled mode')
+  amb.onSpaces('enabled', rows(0))
+  T.check(amb.spaceStats().live == 2, 'the next level creates normal spaces and point emitters')
+  local made, deleted = amb.spaceStats().created, amb.spaceStats().deleted
+  amb.setStreamedAudioEnabled(false)
+  state = amb.streamedAudioState()
+  T.check(state.active and state.pending and amb.spaceStats().live == 2
+    and amb.spaceStats().created == made and amb.spaceStats().deleted == deleted,
+    'requesting isolation does not delete active native sound objects')
+  amb.clear()
+  amb.onSpaces('enabled-reconnect', rows(0))
+  T.check(amb.streamedAudioState().active and amb.spaceStats().live == 2,
+    'disconnect/reconnect also retains enabled mode until level reset')
+
+  amb.reset()
+  amb.onSpaces('shelter', rows(1000))
+  lx, ly, clock = 0, 0, 500
+  amb.onTile(3, '0_0', { biome = { 0, 0 }, audio = { 10, 20, 5, 6, 0.5, 30 } })
+  beamngEarth_weather = { rainNow = 1 }
+  amb.update(3, seaV)
+  clock = 500.5; amb.update(3, seaV)
+  local room
+  for _, o in ipairs(S.liveOf('SFXEmitter')) do
+    if o.fields.track == amb.SETS[0][1][2] then room = o end
+  end
+  T.check(af.enabled and af.cloud.nodeCount == 1 and room and room.playing,
+    'isolating streamed spaces leaves forest wind and roomtone enabled')
+  T.check(rb.set and #rb.set == 2, 'isolating streamed spaces leaves river audio ribbons enabled')
+  local rain = rainEm()
+  T.check(rain and rain.vol > 0, 'isolating streamed spaces leaves rain audio enabled')
+  amb.placeSpaces('shelter', rows(0))
+  clock = 501; amb.update(3, seaV)
+  T.check(amb.inTunnel(0, 0, 0) and rainEm() == nil,
+    'logical isolated tunnel still shelters the listener from rain audio')
+  T.check(amb.spaceStats().live == 0 and #S.liveOf('SFXSpace') == 0,
+    'other ambience does not create isolated streamed sound objects')
+  beamngEarth_weather = nil
+  amb.clear()
+  T.check(#S.liveOf('SFXEmitter') == 0 and not af.enabled, 'isolated level still cleans up ordinary ambience')
+  amb.setStreamedAudioEnabled(true)
+  amb.reset()
+end
 T.done('test_ambience')

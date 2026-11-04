@@ -201,6 +201,31 @@ pixel remained covered. The unfinished sample window can still be lost in a
 native crash. Mark visible disappearances so their timing can be compared with
 the event sequence.
 
+## Streamed sound isolation (dev.5)
+
+Development packages expose **Streamed environmental sounds (next level)** in
+the Debug capture page. It defaults to on. For a controlled isolation run,
+turn it off, return to the main menu, load Earth again, and start capture.
+Changing it during a drive only records the requested next-level choice;
+disconnecting/reconnecting does not delete or recreate the live audio scene.
+The page distinguishes the active mode from a pending change.
+
+This suppresses Earth-created streamed sound zones and point emitters. Vehicle
+sounds, rain, river ribbons, forest wind and background ambience remain. Logical
+tunnel/roof geometry is retained for tunnel lighting and rain shelter. The
+capture's `audio_streamed_enabled` and `audio_change_pending` booleans identify
+the actual mode alongside the sound-object lifecycle counters.
+
+Use the same route and settings when comparing runs. An absence of crashes in
+one mode does not prove the audio objects caused a native crash. The captured
+native SFX dispatch faults do not identify the responsible object. Invalid
+sound geometry is now rejected before native placement, but it has not been
+demonstrated in those crash captures.
+
+Production packages hide and reject this control and always request sound on,
+even if a previous development run saved it off. Detailed capture remains
+opt-in; this control does not start recording.
+
 ## Validation boundaries
 
 Unit/stub tests cover bounded collection, packet backpressure, consent filtering,

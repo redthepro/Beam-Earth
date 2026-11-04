@@ -225,6 +225,9 @@ M.save = save
 function M.syncLevel()
   local ok, li = pcall(require, 'beamngEarth/levelinfo')
   if ok and li and li.write then
+    -- Keep worldwide menu selectors out of the engine's physical spawn-POI scan.
+    -- Retried on later syncs if core_levels was not available during extension load.
+    if li.hookPoiFilter then li.hookPoiFilter() end
     local ok2, err = pcall(li.write, places)
     if not ok2 then log('W', 'beamngEarth', 'places: level info: ' .. tostring(err)) end
     -- each place's picture, made by the server (placepreview.py): its answer runs this again (core)

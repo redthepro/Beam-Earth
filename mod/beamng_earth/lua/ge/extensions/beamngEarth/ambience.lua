@@ -337,6 +337,10 @@ M.POINTS = { [4] = M.PORTAL_EVENT, [5] = WC .. 'Refinery_Tower_Engines', [6] = W
 -- a point kind's volume (else 1): the power plant's, quieter (the user, 2026-10-26: "just quieter")
 M.POINT_VOLUME = { [8] = 0.35 }
 local spaces = {}       -- road tile key -> { { id, row }, ... }
+-- A diagnostic isolation request takes effect before the first streamed sound
+-- tile of a level. Disconnects retain the active choice: never delete/recreate
+-- native audio objects merely because a setting changed while driving.
+local streamedAudioRequested, streamedAudioActive = true, nil
 M.spacesMade = 0
 -- Managed streamed sound objects only (not room tone, rain, or core audio).
 -- Cumulative counters; live is the tracked count, reconciled when a missing
@@ -348,13 +352,39 @@ function M.spaceStats()
     replaced = spaceCounts.replaced, live = spaceCounts.live }
 end
 
+function M.setStreamedAudioEnabled(enabled)
+  if type(enabled) ~= 'boolean' then return false end
+  streamedAudioRequested = enabled
+  return true
+end
+
+function M.streamedAudioState()
+  local active = streamedAudioActive
+  if active == nil then active = streamedAudioRequested end
+  return { requested = streamedAudioRequested, active = active, pending = active ~= streamedAudioRequested }
+end
+
+local function finiteNumber(value)
+  return type(value) == 'number' and value == value and value > -math.huge and value < math.huge
+end
+
 local function spaceRows(flat)
   local rows = {}
   if type(flat) ~= 'table' then return rows end
   for i = 1, #flat - 7, 8 do
     if M.SPACES[flat[i]] or M.POINTS[flat[i]] then
-      rows[#rows + 1] = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3],
-        flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+      local valid = true
+      for j = i + 1, i + 7 do
+        if not finiteNumber(flat[j]) then valid = false; break end
+      end
+      -- Point emitters do not use box dimensions; their zero sizes are valid.
+      if valid and M.SPACES[flat[i]] then
+        valid = flat[i + 4] > 0 and flat[i + 5] > 0 and flat[i + 6] > 0
+      end
+      if valid then
+        rows[#rows + 1] = { flat[i], flat[i + 1], flat[i + 2], flat[i + 3],
+          flat[i + 4], flat[i + 5], flat[i + 6], flat[i + 7] }
+      end
     end
   end
   return rows
@@ -378,13 +408,14 @@ end
 
 -- A road tile's sound spaces (roads.lua onTile: data.sound, its flat rows).
 function M.onSpaces(key, flat)
+  if streamedAudioActive == nil then streamedAudioActive = streamedAudioRequested end
   local replacing = spaces[key] ~= nil
   M.dropSpaces(key)
   local list = {}
   for _, r in ipairs(spaceRows(flat)) do
     local amb = M.SPACES[r[1]]
     local ev = M.POINTS[r[1]]
-    local o = (amb or ev) and Sim.upcast(createObject(ev and 'SFXEmitter' or 'SFXSpace'))
+    local o = streamedAudioActive and (amb or ev) and Sim.upcast(createObject(ev and 'SFXEmitter' or 'SFXSpace'))
     if o then
       if ev then
         o:setTransform(MatrixF(true))
@@ -405,6 +436,9 @@ function M.onSpaces(key, flat)
       -- Objects created to replace an already tracked tile, including recovery
       -- after its engine objects disappeared. Not a claim about native lifetime.
       if replacing then spaceCounts.replaced = spaceCounts.replaced + 1 end
+    elseif not streamedAudioActive then
+      -- Rain shelter and tunnel lights are geometry, independent of audio.
+      list[#list + 1] = { row = r }
     end
   end
   spaces[key] = list
@@ -418,6 +452,10 @@ function M.placeSpaces(key, flat)
   local list = spaces[key]
   local rows = spaceRows(flat)
   if not list or #list ~= #rows then return M.onSpaces(key, flat) end
+  if streamedAudioActive == false then
+    for k, s in ipairs(list) do s.row = rows[k] end
+    return
+  end
   local objects = {}
   -- Validate the whole set before moving anything: a missing object or changed
   -- kind must not leave half the tile remapped and the other half stale.
@@ -587,6 +625,7 @@ end
 -- The level goes.
 function M.reset()
   M.clear()
+  streamedAudioActive = nil
 end
 
 function M.status()

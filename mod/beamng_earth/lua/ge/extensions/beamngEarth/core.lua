@@ -2055,6 +2055,8 @@ function M._telemetryContext(full)
   local audio = ambience.spaceStats()
   c.audio_spaces_live, c.audio_spaces_created, c.audio_spaces_deleted = audio.live, audio.created, audio.deleted
   c.audio_spaces_moved, c.audio_spaces_replaced = audio.moved, audio.replaced
+  local audioMode = ambience.streamedAudioState()
+  c.audio_streamed_enabled, c.audio_change_pending = audioMode.active, audioMode.pending
   c.net_pending_frames = net.pendingFrames()
   c.lat, c.lon = nil, nil
   if p and M._telemetry.status().include_location == true then c.lat, c.lon = p.lat, p.lon end
@@ -2534,6 +2536,7 @@ end
 M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
+  levelinfo.unhookPoiFilter()
   M._clearTelemetryContext()
   M._playerAnchor = nil
   M._diagnosticsLastPlayer = nil

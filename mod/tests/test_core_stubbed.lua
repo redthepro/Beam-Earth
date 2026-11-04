@@ -909,6 +909,8 @@ do -- normal gameplay capture: actual core / settings / socket wiring, no MCP or
   T.check(type(ctx.audio_spaces_live) == 'number' and type(ctx.audio_spaces_created) == 'number'
     and type(ctx.audio_spaces_deleted) == 'number' and type(ctx.audio_spaces_moved) == 'number'
     and type(ctx.audio_spaces_replaced) == 'number', 'capture includes bounded sound-object lifecycle counters')
+  T.check(type(ctx.audio_streamed_enabled) == 'boolean' and type(ctx.audio_change_pending) == 'boolean',
+    'capture identifies the active audio isolation mode and pending next-level change')
   T.check(ctx.vertical_speed_mps == -12.5 and ctx.block_inside and ctx.block_outside_m == 0
     and ctx.guard_mode == 4 and ctx.guard_holds == 2 and ctx.guard_rescues == 1,
     'signed vertical motion, actual block membership and guard decisions are observable without coordinates')

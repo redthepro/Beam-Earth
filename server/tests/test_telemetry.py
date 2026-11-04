@@ -115,7 +115,8 @@ class CaptureTests(unittest.TestCase):
                         "guard_holds": 2, "guard_rescues": 1, "guard_failed": False,
                         "player_frame_current": False, "audio_spaces_live": 5,
                         "audio_spaces_created": 10, "audio_spaces_deleted": 5,
-                        "audio_spaces_moved": 20, "audio_spaces_replaced": 2}
+                        "audio_spaces_moved": 20, "audio_spaces_replaced": 2,
+                        "audio_streamed_enabled": False, "audio_change_pending": True}
         row["context"].update(measurements)
         row["worst"]["context"].update(measurements)
         cleaned = telemetry.clean_client(row)

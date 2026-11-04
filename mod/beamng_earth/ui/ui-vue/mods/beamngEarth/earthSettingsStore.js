@@ -164,6 +164,15 @@ export const status = ref({})
 export const telemetryCoordinates = ref(false)
 export const telemetryMessage = ref("")
 export const telemetry = computed(() => status.value.telemetry || { available: false, active: false })
+export const streamedAudio = computed(() => status.value.streamedAudio || null)
+export const audioIsolationMessage = ref("")
+export function setStreamedAudio(value) {
+  audioIsolationMessage.value = ""
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiSet('devStreamedAudio', ${value === true ? "true" : "false"}) or nil`, res => {
+    if (!res || !res.ok) audioIsolationMessage.value = (res && res.error) || "Mod not loaded"
+    refresh()
+  })
+}
 export function setTelemetryCoordinates(value) {
   if (!telemetry.value.active) telemetryCoordinates.value = value === true
 }
