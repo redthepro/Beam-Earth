@@ -78,3 +78,22 @@ Bridge collision needs testing at normal speed before another 200+ MPH run.
   operation and native crash resolution are not verified by those checks.
 - Frozen executable checks and local delivery must pass before this candidate is
   handed over. Source tests alone do not establish a working game session.
+
+## Automated validation before packaging
+
+The foundation gate at `2eb192a4`/`219bb4a9` completed 49 Python modules:
+752 passed and 20 explicit skips, plus all 78 offline/stubbed Lua modules,
+two Node checks and four Rust server-list tests. The changed peer-work module
+was rerun after that gate. Those results predate the final bridge integration.
+
+At the combined bridge/assistance revision `0b221af2`, 16 affected Python modules
+completed with 309 passed and five existing skips. After the geographic
+source-boundary correction at `b8a2e3d0`, seven affected modules completed with
+175 passed and one existing LuaJIT-unavailable skip. These overlapping test runs
+must not be added together as a distinct-test total. The bridge report records
+its broader 223-case regression run separately.
+
+Versioned source and BeamMP plugin packages were generated successfully at
+`b8a2e3d0`. They are package-construction checks, not native hosting executables
+or evidence of a gameplay session. Windows frozen-build verification and the
+final helper synchronization are recorded with the delivered artifact.
