@@ -6487,6 +6487,15 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
     if bridges is not None:
         got = [(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
                if np.isfinite(z).all()]
+        if any(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1).sum() <= roadmesh.JUNCTION_MAX_PART_M
+               for _fid, _sp, p, _lon in got):
+            # A short branch can meet its fork outside the usual parapet context. Both tiles need all incident
+            # complete profiles, even the tile holding only that branch's far abutment. parts() adds NEAR_M.
+            margin = max(0.0, roadmesh.JUNCTION_MAX_PART_M + DECK_CONTEXT_M - NEAR_M)
+            x0, y0, x1, y1 = exact
+            got = [(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in
+                   bridges.parts(cells, (x0 - margin, y0 - margin, x1 + margin, y1 + margin))
+                   if np.isfinite(z).all()]
         dd = getattr(bridges, "depth_of", None)
         return _deck_chunks(got, exact, bridges._ground, {d[0]: dd(d[0]) for d in got} if dd else None)
     if not bseen:
@@ -6710,12 +6719,24 @@ def _deck_chunks(decks, exact, ground_fn=None, depths=None):
                 abut[fid].append((float(q[0]), float(q[1])))
     x0, y0, x1, y1 = exact
     wide = (x0 - DECK_CONTEXT_M, y0 - DECK_CONTEXT_M, x1 + DECK_CONTEXT_M, y1 + DECK_CONTEXT_M)
+    # Complete short profiles survive tile clipping. A neighbouring tile must not mistake a clipped fragment of
+    # a long span for a complete short junction branch, nor derive a different shared surface at its border.
+    counts = {}
+    for fid, _sp, _pts, _lon in decks:
+        counts[fid] = counts.get(fid, 0) + 1
+    joint_profiles = {fid: np.round(np.asarray(pts, np.float64)[:, :3], 3).tolist()
+                      for fid, _spec, pts, _lon in decks if counts[fid] == 1 and
+                      np.linalg.norm(np.diff(np.asarray(pts)[:, :2], axis=0), axis=1).sum() <= roadmesh.JUNCTION_MAX_PART_M}
+    junction_margin = roadmesh.JUNCTION_MAX_PART_M + DECK_CONTEXT_M
+    junction_box = (x0 - junction_margin, y0 - junction_margin, x1 + junction_margin, y1 + junction_margin)
     for fid, spec, pts, lon in decks:
-        for piece in clip_polyline(pts, *wide):
+        for piece in clip_polyline(pts, *(junction_box if fid in joint_profiles else wide)):
             for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                 if len(c) >= 2:
                     ch = _chunk({**_deck_look(spec), "deck": True}, spec.width, c)
                     ch.update(fixed=True, deck=True, fid=fid, ctx=True)
+                    if fid in joint_profiles:
+                        ch['jn'] = joint_profiles[fid]
                     if depths and fid in depths:
                         ch["dd"] = round(float(depths[fid]), 3)
                     out.append(ch)
@@ -6730,9 +6751,11 @@ def _deck_chunks(decks, exact, ground_fn=None, depths=None):
                     if len(c) >= 2:
                         ch = _chunk(look, w, c)
                         ch["fixed"] = True
+                        ch['fid'] = fid
                         if look.get("deck"):
                             ch["deck"] = True
-                            ch["fid"] = fid             # (roadmesh.deck: no parapet between parts side by side)
+                            if fid in joint_profiles:
+                                ch['jn'] = joint_profiles[fid]
                             if depths and fid in depths:
                                 ch["dd"] = round(float(depths[fid]), 3)     # (roadmesh.deck: its slab and girders)
                             if abut.get(fid):
