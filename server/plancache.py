@@ -20,6 +20,7 @@ import os
 import shutil
 import threading
 import time
+import zipfile
 
 import numpy as np
 
@@ -127,18 +128,31 @@ class PlanCache:
                 meta = json.loads(bytes(f["meta"]).decode("utf-8"))
                 lists = {g: _split(f, g) for g in ("p", "z", "c", "k", "v", "o")}
                 lists["b"] = _split(f, "b") if "b_n" in f.files else []
-        except (OSError, ValueError, KeyError, TypeError):
+            if not isinstance(meta, dict) or any(not isinstance(meta[name], list)
+                                                for name in ("plans", "keeps", "covers", "opens")):
+                raise ValueError("Invalid plan cache metadata")
+            if any(len(meta[name]) != len(lists[group]) for name, group in
+                   (("plans", "p"), ("plans", "z"), ("keeps", "k"), ("covers", "v"), ("opens", "o"))):
+                raise ValueError("Plan cache metadata counts differ")
+            plans, cuts, banks = [], iter(lists["c"]), iter(lists["b"])
+            for m, xy, z in zip(meta["plans"], lists["p"], lists["z"]):
+                if not isinstance(m, dict):
+                    raise ValueError("Invalid cached plan")
+                pl = Plan(xy, z, m["half"], tuple(m["abut"]), next(cuts) if m["cut"] else None, m["road_half"])
+                pl.rid, pl.max_wall = m["rid"], m["max_wall"]
+                pl.bank = next(banks) if m.get("bank") else None
+                plans.append((m["fid"], pl))
+            keeps = list(zip(lists["k"], meta["keeps"]))
+            covers = list(zip(lists["v"], meta["covers"]))
+            if any(not isinstance(sp, dict) for sp in meta["opens"]):
+                raise ValueError("Invalid cached road specification")
+            opens = [(xy, Spec(**{**sp, "sides": tuple(sp["sides"]) if sp.get("sides") is not None else None}))
+                     for xy, sp in zip(lists["o"], meta["opens"])]   # (JSON gave sides back as a list)
+        except (OSError, ValueError, KeyError, TypeError, EOFError, zipfile.BadZipFile, IndexError, StopIteration):
+            # A damaged optional cache is a miss, including errors discovered
+            # while reconstructing the plans. Programming/resource failures
+            # (for example RuntimeError or MemoryError) still propagate.
             return None
-        plans, cuts, banks = [], iter(lists["c"]), iter(lists["b"])
-        for m, xy, z in zip(meta["plans"], lists["p"], lists["z"]):
-            pl = Plan(xy, z, m["half"], tuple(m["abut"]), next(cuts) if m["cut"] else None, m["road_half"])
-            pl.rid, pl.max_wall = m["rid"], m["max_wall"]
-            pl.bank = next(banks) if m.get("bank") else None
-            plans.append((m["fid"], pl))
-        keeps = list(zip(lists["k"], meta["keeps"]))
-        covers = list(zip(lists["v"], meta["covers"]))
-        opens = [(xy, Spec(**{**sp, "sides": tuple(sp["sides"]) if sp.get("sides") is not None else None}))
-                 for xy, sp in zip(lists["o"], meta["opens"])]   # (JSON gave sides back as a list)
         with self._lock:
             self.stats["read"] += 1
         return plans, keeps, covers, opens

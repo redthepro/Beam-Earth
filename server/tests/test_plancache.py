@@ -1,5 +1,6 @@
 """plancache: a cell's road plans shared between the server's processes: the same heights from the cache, one
 process plans a cell while the others wait (not behind a less favoured one), stale locks, old runs pruned."""
+import json
 import os
 import shutil
 import sys
@@ -78,6 +79,64 @@ class PlanCacheTest(unittest.TestCase):
     def test_no_run_no_cache(self):
         os.environ.pop(plancache.RUN_ENV, None)
         self.assertIsNone(plancache.for_grader(self.dir, self.grader(FakeMD(None), False), None, None))
+
+    def test_truncated_archives_are_rebuilt_after_cache_miss(self):
+        c = plancache.PlanCache(self.dir, "s")
+        os.makedirs(c.dir, exist_ok=True)
+        for payload in (b"", b"PK\x03\x04" + b"\0" * 20):
+            with self.subTest(size=len(payload)):
+                with open(c._path(KEY), "wb") as stream:
+                    stream.write(payload)
+                self.assertIsNone(c.load(KEY))
+                self.assertEqual(c.claim(KEY), (None, True))
+                try:
+                    self.assertTrue(c.store(KEY, [], [], [], []))
+                finally:
+                    c.release(KEY)
+                self.assertEqual(c.load(KEY), ([], [], [], []))
+                self.assertFalse(os.path.exists(c._path(KEY) + ".lock"))
+
+    def test_malformed_metadata_and_missing_cut_arrays_are_misses(self):
+        c = plancache.PlanCache(self.dir, "s")
+        plan = grading.Plan(np.array([[0., 0.], [10., 0.]]), np.array([2., 3.]), 3.)
+        self.assertTrue(c.store(KEY, [("road", plan)], [], [], []))
+        with np.load(c._path(KEY), allow_pickle=False) as stored:
+            arrays = {name: stored[name] for name in stored.files}
+        original = arrays["meta"].tobytes()
+        for damage in ("missing_field", "missing_cut", "short_abutment", "short_metadata", "wrong_type"):
+            with self.subTest(damage=damage):
+                meta = json.loads(original)
+                if damage == "missing_field":
+                    del meta["plans"][0]["half"]
+                elif damage == "missing_cut":
+                    meta["plans"][0]["cut"] = True
+                elif damage == "short_abutment":
+                    meta["plans"][0]["abut"] = []
+                elif damage == "short_metadata":
+                    meta["plans"] = []
+                else:
+                    meta = None
+                arrays["meta"] = np.frombuffer(json.dumps(meta).encode(), np.uint8)
+                np.savez(c._path(KEY), **arrays)
+                self.assertIsNone(c.load(KEY))
+        self.assertEqual(c.stats["read"], 0)
+
+    def test_valid_cutting_sentinels_survive_cache_round_trip(self):
+        c = plancache.PlanCache(self.dir, "s")
+        cut = np.array([[2., np.nan, np.nan, np.nan, np.nan, np.nan]])
+        plan = grading.Plan(np.array([[0., 0.], [10., 0.]]), np.array([2., 3.]), 3., cut=cut)
+        self.assertTrue(c.store(KEY, [("road", plan)], [], [], []))
+        got = c.load(KEY)
+        self.assertIsNotNone(got)
+        np.testing.assert_array_equal(got[0][0][1].cut, cut)
+
+    def test_unexpected_loader_errors_are_not_hidden(self):
+        c = plancache.PlanCache(self.dir, "s")
+        self.assertTrue(c.store(KEY, [], [], [], []))
+        for error in (MemoryError, RuntimeError):
+            with self.subTest(error=error), mock.patch.object(plancache.np, "load", side_effect=error):
+                with self.assertRaises(error):
+                    c.load(KEY)
 
     def test_waits_for_an_equal_planner(self):
         c = plancache.PlanCache(self.dir, "s")
