@@ -157,6 +157,28 @@ class BrokerTests(unittest.TestCase):
         broker.close()
         self.assertEqual(broker.request({"op": "test", "key": 1})[0]["error"], "unavailable")
 
+    def test_close_cannot_overtake_an_in_progress_submission(self):
+        entered, release = threading.Event(), threading.Event()
+        broker = self.broker()
+        original = broker.executor.submit
+        def delayed_submit(*args, **kwargs):
+            entered.set()
+            release.wait(2)
+            return original(*args, **kwargs)
+        broker.executor.submit = delayed_submit
+        with ThreadPoolExecutor(2) as callers:
+            request = callers.submit(broker.request, {"op": "test", "key": 1})
+            self.assertTrue(entered.wait(1))
+            closing = callers.submit(broker.close, 0)
+            try:
+                time.sleep(.05)
+                self.assertFalse(closing.done(), "close must observe submitted work before terminating its pool")
+            finally:
+                release.set()
+            closing.result(1)
+            request.result(1)
+        self.assertEqual(broker.request({"op": "test", "key": 2})[0]["error"], "unavailable")
+
     def test_hung_real_worker_is_killed_and_replaced(self):
         import pools
         executor = pools.RespawningPool("assist-test", 1, mp_context=multiprocessing.get_context("spawn"))

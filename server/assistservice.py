@@ -208,14 +208,21 @@ class Broker:
                 self.stats["submitted"] += 1
         if mine:
             try:
-                actual = self.executor.submit(self.runner, request)
-                entry.actual = actual
-                timer = entry.timer = threading.Timer(self.hard_timeout, self._timeout, args=(key, entry))
-                timer.daemon = True
+                # Serialize process submission with close: shutdown must see
+                # every actual Future/process before taking its termination snapshot.
+                with self.lock:
+                    if self.closed:
+                        raise RuntimeError("service closing")
+                    actual = self.executor.submit(self.runner, request)
+                    entry.actual = actual
+                    timer = entry.timer = threading.Timer(self.hard_timeout, self._timeout, args=(key, entry))
+                    timer.daemon = True
+                # A completed Future invokes callbacks synchronously, so register
+                # this outside the lock (_finish takes it too).
                 actual.add_done_callback(lambda future: self._finish(key, entry, future))
-                # Completion can run synchronously; no timer is needed for an already finished job.
-                if not actual.done():
-                    timer.start()
+                with self.lock:
+                    if not self.closed and not actual.done():
+                        timer.start()
             except Exception:
                 bad = Future()
                 bad.set_exception(RuntimeError("worker submission failed"))
