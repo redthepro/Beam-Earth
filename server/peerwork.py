@@ -959,6 +959,8 @@ class SharedFarPool:
                 deferred = True
                 raise RuntimeError("Assistance result is not ready")
             received = True
+            if request["context"] != assistjobs.source_context(self.assist_cache_dir, self.settings):
+                raise ValueError("World sources changed while receiving assisted geometry")
             result = assistjobs.decode_result(name, head, blobs, request)
             with self.lock:
                 self.stats["remote"] += 1

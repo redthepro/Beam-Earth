@@ -462,7 +462,8 @@ class AssistanceTest(unittest.TestCase):
         self.pool = peerwork.SharedFarPool(self.local, [], {"roads": True}, None,
                                            assistance=self.assist, assist_cache_dir="cache-dir")
         self.addCleanup(self.pool.shutdown)
-        self.jobs = types.SimpleNamespace(make_request=mock.Mock(return_value={"op": "far_global_geometry"}),
+        self.jobs = types.SimpleNamespace(make_request=mock.Mock(return_value={"op": "far_global_geometry", "context": {"source": "a"}}),
+                                         source_context=mock.Mock(return_value={"source": "a"}),
                                          decode_result=mock.Mock(return_value="remote geometry"))
         self.module = mock.patch.dict(sys.modules, {"assistjobs": self.jobs})
         self.module.start()
@@ -481,7 +482,7 @@ class AssistanceTest(unittest.TestCase):
         self.assertEqual(self.pool.submit(self.far_global_geometry, *args).result(2), "remote geometry")
         self.jobs.make_request.assert_called_once_with("far_global_geometry", args, {"roads": True}, "cache-dir")
         self.jobs.decode_result.assert_called_once_with("far_global_geometry", {"ok": True}, [b"geometry"],
-                                                        {"op": "far_global_geometry"})
+                                                        {"op": "far_global_geometry", "context": {"source": "a"}})
         self.assertEqual(self.local.calls, [])
         self.assertEqual(self.pool.stats["assistRemote"], 1)
         self.assertEqual(self.pool.remote_slots(), 1)
@@ -505,6 +506,12 @@ class AssistanceTest(unittest.TestCase):
     def test_invalid_result_falls_back_and_backs_off(self):
         self.jobs.decode_result.side_effect = ValueError("invalid geometry")
         self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.assertEqual(self.assist.rejected, 1)
+
+    def test_source_refresh_during_request_keeps_local_geometry(self):
+        self.jobs.source_context.return_value = {"source": "b"}
+        self.assertEqual(self.pool.submit(self.far_global_geometry, 1).result(2), "local geometry")
+        self.jobs.decode_result.assert_not_called()
         self.assertEqual(self.assist.rejected, 1)
 
     def test_request_context_failure_returns_reservation(self):
