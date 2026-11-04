@@ -155,9 +155,9 @@ class WindowsGameHelpersTest(unittest.TestCase):
 
 
 class InitialGameScanTest(unittest.TestCase):
-    def launch(self, states):
+    def launch(self, states, user_dir="game-user"):
         import install
-        args = argparse.Namespace(user_dir="game-user", build=None, keep_mod=False, game_dir=None,
+        args = argparse.Namespace(user_dir=user_dir, build=None, keep_mod=False, game_dir=None,
                                   no_game=False, extra=[], cache_dir=None, no_gcpatch=False, gfx=None)
         server, process = mock.Mock(), mock.Mock()
         patches = {}
@@ -170,6 +170,7 @@ class InitialGameScanTest(unittest.TestCase):
                     (install, "install_mod", "updated"), (install, "reload_running_game", True),
                     (launcher, "title", None), (launcher, "support_notice", None), (launcher, "say", None),
                     (launcher, "row", None), (launcher, "problem", None), (launcher, "data_dir", "test-data"),
+                    (launcher, "user_folder", "game-user"),
                     (launcher, "under_wine", False), (launcher, "windows_game_dir", "game-folder"),
                     (launcher, "ask_game_dir", None), (launcher, "cache_dir_arg", None),
                     (launcher, "server_port_busy", False), (launcher, "start_server", server),
@@ -181,11 +182,11 @@ class InitialGameScanTest(unittest.TestCase):
         return patches, scan, sleep, server, process
 
     def test_persistent_unknown_leaves_game_mod_and_services_untouched(self):
-        calls, scan, sleep, _, _ = self.launch([None, None, None])
+        calls, scan, sleep, _, _ = self.launch([None, None, None], user_dir=None)
         self.assertEqual(scan.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
         calls["problem"].assert_called_once()
-        for name in ("clear_reload_files", "install_mod", "reload_running_game", "ask_game_dir",
+        for name in ("user_folder", "clear_reload_files", "install_mod", "reload_running_game", "ask_game_dir",
                      "start_server", "stop_server", "beammp_up", "start_game", "wait_for_game"):
             calls[name].assert_not_called()
 

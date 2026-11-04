@@ -1454,6 +1454,19 @@ def run(args):
     if "-dev." in install.version():
         row("Telemetry", "opt-in: Esc > BeamNG.Earth > Telemetry > Start capture")
         row("Captures", os.path.join(data_dir(), "telemetry"))
+    running = game_alive()
+    if running is None:
+        say("Game process status is unavailable; retrying before changing the game or starting services.")
+        for _ in range(2):
+            time.sleep(1)
+            running = game_alive()
+            if running is not None:
+                break
+        if running is None:
+            problem("Cannot confirm whether BeamNG.drive is running.",
+                    "Wait a moment and try BeamNG.Earth again. The game, mod and existing services were left "
+                    "untouched; you can keep playing if the game is already open.")
+            return
     wine = under_wine()
     build = "native"
     if args.user_dir:
@@ -1478,19 +1491,6 @@ def run(args):
             row("GPU", gpu_note)
     row("Game folder", user_dir + ("  (the Windows build, Proton)" if build == "proton" else "")
         + (f"  (Steam compatibility tool: {tool})" if tool else ""))       # (which was read: GitHub #56)
-    running = game_alive()
-    if running is None:
-        say("Game process status is unavailable; retrying before changing the game or starting services.")
-        for _ in range(2):
-            time.sleep(1)
-            running = game_alive()
-            if running is not None:
-                break
-        if running is None:
-            problem("Cannot confirm whether BeamNG.drive is running.",
-                    "Wait a moment and try BeamNG.Earth again. The game, mod and existing services were left "
-                    "untouched; you can keep playing if the game is already open.")
-            return
     if not running:
         install.clear_reload_files(user_dir)
     reload_game = False
