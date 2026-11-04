@@ -26,13 +26,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = ["install.py", "start.py", "launcher.py", "bmplaunch.py", "apppaths.py", "run_server.bat", "run_server.sh", "README.md", "LICENSE", "CREDITS.md",
          "VERSION", "docs/QUICKSTART.md", "docs/MODERNIZATION.md", "docs/MODERNIZATION_VALIDATION.md",
          "docs/TELEMETRY.md", "docs/RELEASE_1_8_4_DEV_1.md",
+         "docs/RELEASE_1_8_4_DEV_5.md", "docs/SERVER_ASSIST.md", "docs/BRIDGE_JUNCTION_VALIDATION.md",
+         "docs/BRIDGE_CLEARANCE.md", "docs/research/2026-11-03-server-assistance.md",
+         "docs/research/2026-11-03-server-assist-lan.md",
          "docs/SKETCHFAB_ASSETS.md", "docs/SHARED_WORLD.md", "docs/RELAUNCH_TROUBLESHOOTING.md", "docs/STABILITY_VALIDATION.md",
          "docs/PLATFORM_STATUS.md", "docs/RELEASE_1_7_4.md", "docs/RELEASE_1_8_1.md", "docs/RELEASE_1_8_3.md",
          "docs/research/2026-11-02-range-cache.md", "docs/research/2026-11-02-world-bundle.md",
          "docs/research/2026-11-02-world-bundle.json", "docs/research/2026-11-02-release-1.8.1-world-bundle.json",
          "beammp/MODERNIZATION.md"]
 TREES = ["mod/beamng_earth", "server"]
-TOOLS = ["tools/reports.py", "tools/sketchfab_assets.py", "tools/world_cache.py", "tools/inspect_capture.py"]  # no stored credentials
+TOOLS = ["tools/reports.py", "tools/sketchfab_assets.py", "tools/world_cache.py", "tools/inspect_capture.py",
+         "tools/serve_assist.py"]  # no stored credentials
 SKIP_DIRS = {"__pycache__", "tests", ".git", "backups", "probes", "research", ".venv", "dist"}
 SKIP_EXT = {".pyc", ".pyo", ".log", ".swp"}
 EXECUTABLE = {"run_server.sh", "install.py", "start.py"}

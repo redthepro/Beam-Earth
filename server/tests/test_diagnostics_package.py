@@ -77,6 +77,26 @@ class DiagnosticsPackageTest(unittest.TestCase):
                         self.assertIsNone(archive.testzip())
                 self.assertEqual(contents(source), before, "packaging must not change source metadata or providers")
 
+    def test_source_zip_includes_assistance_setup_and_validation(self):
+        # Exercise the actual release allowlist; the small policy fixtures above
+        # deliberately replace it and cannot catch missing deployment entrypoints.
+        expected = ("tools/serve_assist.py", "server/assistservice.py", "server/assistjobs.py",
+                    "docs/SERVER_ASSIST.md", "docs/RELEASE_1_8_4_DEV_5.md", "docs/BRIDGE_JUNCTION_VALIDATION.md",
+                    "docs/BRIDGE_CLEARANCE.md", "docs/research/2026-11-03-server-assistance.md",
+                    "docs/research/2026-11-03-server-assist-lan.md")
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sys, 'argv', ['package.py', '--out', tmp]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            package.main()
+            ver = package.version()
+            with zipfile.ZipFile(Path(tmp) / f"BeamNG.Earth-{ver}.zip") as archive:
+                self.assertEqual(len(archive.namelist()), len(set(archive.namelist())))
+                for relative in expected:
+                    with self.subTest(relative=relative):
+                        self.assertEqual(archive.read(f"BeamNG.Earth-{ver}/{relative}"),
+                                         (ROOT / relative).read_bytes())
+                self.assertIsNone(archive.testzip())
+
     def test_frozen_windows_and_linux_use_separate_selected_tree(self):
         for windows in (True, False):
             for ver in ("1.8.4", "1.8.4-dev.4"):
