@@ -320,7 +320,10 @@ def run(request):
         _tainted = False
     try:
         reply = _run(request)
-        if not reply[0].get("ok"):
+        # A different source release is rejected before generation touches any
+        # dependencies. Preserve warm state for compatible clients; incomplete
+        # work and exceptions still require a clean retry.
+        if not reply[0].get("ok") and reply[0].get("error") != "source_mismatch":
             _tainted = True
         return reply
     except BaseException:

@@ -180,6 +180,31 @@ class RealPlanTest(unittest.TestCase):
             assistjobs.run(request())
             reset.assert_called_once()
 
+    def test_source_mismatches_preserve_warm_worker_state(self):
+        import blockworker
+        with mock.patch.object(assistjobs, "_tainted", False), \
+                mock.patch.object(assistjobs, "_settings", SETTINGS), \
+                mock.patch.object(assistjobs, "source_context", return_value={}), \
+                mock.patch.object(assistjobs, "_reset_state") as reset, \
+                mock.patch.object(blockworker, "far_global_geometry") as build:
+            for _ in range(3):
+                self.assertEqual(assistjobs.run(request()), ({"ok": False, "error": "source_mismatch"}, []))
+                self.assertFalse(assistjobs._tainted)
+            reset.assert_not_called()
+            build.assert_not_called()
+
+    def test_generation_exception_resets_dependencies_before_retry(self):
+        with mock.patch.object(assistjobs, "_tainted", False), \
+                mock.patch.object(assistjobs, "_reset_state") as reset, \
+                mock.patch.object(assistjobs, "_run", side_effect=[ValueError("incomplete generation"),
+                                                               ({"ok": True}, [])]):
+            with self.assertRaises(ValueError):
+                assistjobs.run(request())
+            self.assertTrue(assistjobs._tainted)
+            assistjobs.run(request())
+            reset.assert_called_once()
+            self.assertFalse(assistjobs._tainted)
+
     def test_helper_rebuilds_unmarked_plan_after_source_recovers(self):
         with tempfile.TemporaryDirectory() as tmp:
             c = plancache.PlanCache(tmp, "w0s0")
