@@ -238,18 +238,18 @@ class TLSTests(unittest.TestCase):
         if not Path(executable).exists():
             raise unittest.SkipTest("openssl is required to generate disposable TLS test certificates")
         cls.directory = tempfile.TemporaryDirectory(prefix="earth-assist-tls-test-")
+        cls.addClassCleanup(cls.directory.cleanup)
         cls.cert = str(Path(cls.directory.name) / "cert.pem")
         cls.key = str(Path(cls.directory.name) / "key.pem")
-        subprocess.run([executable, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        # Disposable P-256 keys keep setup bounded without variable RSA prime-search cost.
+        subprocess.run([executable, "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:prime256v1", "-nodes", "-batch",
                         "-keyout", cls.key, "-out", cls.cert, "-days", "1", "-subj", "/CN=localhost",
                         "-addext", "subjectAltName=IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:TRUE"],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                       check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=20)
         cls.context = service.tls_context(cls.cert, cls.key)
         cls.client_context = ssl.create_default_context(cafile=cls.cert)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.directory.cleanup()
 
     def setUp(self):
         self.executor = ThreadPoolExecutor(2)
@@ -345,9 +345,12 @@ class TLSTests(unittest.TestCase):
             self.assertEqual(sock.recv(1), b"")
 
     def test_untrusted_certificate_fails_client_verification(self):
+        # Loading the Windows trust store can exceed this fixture's 300 ms handshake deadline.
+        # Prepare the client before opening a connection so this tests certificate rejection.
+        context = ssl.create_default_context()
         with socket.create_connection(self.server.server_address, timeout=1) as raw:
             with self.assertRaises(ssl.SSLCertVerificationError):
-                ssl.create_default_context().wrap_socket(raw, server_hostname="127.0.0.1")
+                context.wrap_socket(raw, server_hostname="127.0.0.1")
 
 
 class ConfigurationTests(unittest.TestCase):

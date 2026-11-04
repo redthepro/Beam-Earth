@@ -197,10 +197,12 @@ class TLSTest(unittest.TestCase):
         cls.cert, cls.key = root / "cert.pem", root / "key.pem"
         cls.token = root / "token"
         cls.token.write_text(TOKEN)
-        subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        # Disposable P-256 keys avoid variable RSA prime-search time on loaded CI hosts.
+        subprocess.run([openssl, "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:prime256v1", "-nodes", "-batch", "-days", "1",
                         "-keyout", str(cls.key), "-out", str(cls.cert), "-subj", "/CN=localhost",
                         "-addext", "subjectAltName=IP:127.0.0.1"], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
 
     def setUp(self):
         self.jobs = mock.patch.dict(sys.modules, {"assistjobs": types.SimpleNamespace(identity=lambda: IDENTITY)})
