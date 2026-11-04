@@ -106,3 +106,23 @@ ground approach in both directions, check low-speed wheel contact first, then
 repeat at normal road speed and across a tile boundary/rebase. Check stacked
 bridges keep their guardrails, inspect visible/collision alignment, and capture
 any residual bump. This patch does not establish or fix a native crash cause.
+
+## Follow-up terrain-grid replay
+
+The preserved screenshot-session log confirms anchor `(46.67, 7.70)` and a
+height quantum of `1/32 m`. A later offline check sampled the existing grader on
+that anchor's 2 m terrain lattice, quantized the heights, and compared triangle
+interpolation variants and the old/new bridge collision envelopes. This is a
+reconstructed grid check, not a measurement from BeamNG's physics engine.
+
+The old primary approach contained approximately 0.62–0.66 m pad-edge drops
+between samples 0.05 m apart. Those drops disappear with the candidate. The
+centreline's maximum two-metre grade falls from about 49.7% to 24.6%; the remaining
+terrain changes about 0.49 m over 2 m. It is not fully averaged away by the grid.
+No sampled approach height was raised by the correction beyond floating-point
+noise. The abutment retains approximately 1.4–2.0 cm mismatch between mesh and
+quantized terrain, essentially unchanged from the baseline.
+
+The candidate improves the reproduced collision defect, but the steep underlying
+approach remains a separate investigation. Validate at low speed before normal
+driving; these results do not establish that the route is smooth at high speed.

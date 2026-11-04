@@ -97,3 +97,35 @@ Versioned source and BeamMP plugin packages were generated successfully at
 `b8a2e3d0`. They are package-construction checks, not native hosting executables
 or evidence of a gameplay session. Windows frozen-build verification and the
 final helper synchronization are recorded with the delivered artifact.
+
+## Compiled candidate and delivery
+
+The Windows executable was compiled in an isolated checkout at
+`01484f26f6e3b88ee25f56c33d5d1cca1ade39f8`. All 34 native/build input hashes
+matched the previously source-built native module; its unchanged binary and
+verified own bootloader were reused. The exact staged native binary passed
+90 tests, including the new bridge and deck-pad scenarios.
+
+Frozen validation checked versions, source identity, 14 Python code objects,
+14 Lua files and both settings UI files against that commit. Server CLI help
+and the capture inspector exited successfully, with source/frozen inspection
+results equal. Development capture policy, production omission of the capture
+provider and credential exclusion checks passed. The packaging checkout is
+clean and its tracked native binary was restored. PyInstaller's existing optional
+`duckdb.experimental`/`typing_extensions` collection warning remains; project
+source does not use that experimental module.
+
+`BeamNG.Earth-1.8.4-dev.5.exe`: **57,376,474 bytes**.
+
+SHA-256: `c67df30abfc695c0ece51db65a3beaac46d58f41ebde2b606fd926bd76c7c0f8`.
+
+A hash-matching copy, notes and a launcher for the privately configured LAN helper
+were delivered to Downloads. The helper was synchronized and successfully served
+the final-source Virginia jobs; see the LAN report. The executable has not been
+automatically installed, launched for gameplay or published to GitHub.
+
+A previous BeamNG process remained windowless after its log reported completed
+shutdown. Its logs/process evidence were preserved and that specific leftover was
+terminated before handoff. This cleanup is not a fix for the underlying shutdown
+leak. The later terrain-grid replay also confirms a remaining steep approach;
+see the bridge report before treating this candidate as gameplay-verified.
