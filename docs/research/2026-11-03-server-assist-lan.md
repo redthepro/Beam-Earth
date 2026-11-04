@@ -107,8 +107,8 @@ Near collision installation, rendering and vehicle simulation remain on the clie
 This service does not turn BeamMP into a remote simulation host. The checked source
 metadata also does not represent an immutable snapshot of every raw elevation tile.
 
-Still required: testing the final combined source revision, gameplay with assistance
-enabled, high-speed driving and repositioning, long-session memory behavior,
+Still required: gameplay with assistance enabled, high-speed driving and
+repositioning, long-session memory behavior,
 controlled latency/loss tests against the deployed service, and concurrent-player
 load tests. The 30-second first Virginia road request also demonstrates why predictive
 work and shared reuse matter: a cold helper cannot guarantee immediate construction
@@ -117,3 +117,29 @@ at the vehicle's current location. Local fallback and admission limits remain ac
 See [server assistance operations](../SERVER_ASSIST.md) for the supported protocol,
 configuration and fallback behavior. A final code change must be synchronized to
 both ends; mismatched identities intentionally decline offload.
+
+## Final integrated source smoke check
+
+The helper was synchronized again to `b8a2e3d0` after the bridge surface changes,
+the geographic source-cell boundary fix and the additional assistance reliability
+fixes. Exact source-file hashes were verified on installation, and the Linux native
+library remained unchanged. The service alone was restarted; BeamMP and DNS retained
+their original processes. The matching Windows probe accepted generator identity
+`e786fccb4d4af1dd-116-599dde557875ff50` on both ends.
+
+The same Virginia requests passed again with cached provider data and an empty
+service reply cache after restart:
+
+| Operation | First accepted wall time | Repeated identical reply | Validated result |
+| --- | ---: | ---: | --- |
+| Global terrain | 0.870 s | 55 ms | 158,100 bytes; 1,221 vertices; 2,304 triangles |
+| Road plans | 1.106 s | 68 ms | 393,889 bytes; 250 plans |
+
+There were no pending or failure responses. The terrain and plan artifact hashes
+matched the prior Virginia results; the repeated replies were byte-identical.
+Invalid token, incompatible identity, untrusted certificate and plaintext rejection
+checks passed again. The helper remained active with zero automatic restarts,
+roughly 225 MiB of current memory after this small warmed-data smoke test, and about
+737 MiB of disk cache. These figures describe this request set, not sustained or
+multiplayer peak use. The final code smoke check is complete; the gameplay and
+capacity validation gaps listed above remain.
