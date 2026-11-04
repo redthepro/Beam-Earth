@@ -209,6 +209,7 @@ class _JunctionSurface:
 
     def top(self, p, uv, t, lift=0.0):
         import fast
+        fast.require(52, 'follow_tris')
         q = np.ascontiguousarray(self.local(p))
         self._ensure_grid(q)
         # No terrain-step suppression on a bridge. All intersecting surfaces use these exact grid triangles.

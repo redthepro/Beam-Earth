@@ -5456,6 +5456,7 @@ class ChainView:
 
     def __init__(self, cs, frame, prefer=None):
         self.cs, self.frame, self.prefer = cs, frame, prefer
+        self.cell_fn = cs.cell_fn
         self.elev = cs.elev
         self.lock = threading.Lock()
         self._mapped = {}           # (store region, pid, id(xy)) -> (xy ref, mapped part)
@@ -6493,6 +6494,23 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
             # complete profiles, even the tile holding only that branch's far abutment. parts() adds NEAR_M.
             margin = max(0.0, roadmesh.JUNCTION_MAX_PART_M + DECK_CONTEXT_M - NEAR_M)
             x0, y0, x1, y1 = exact
+            cell_fn = getattr(bridges, 'cell_fn', None)
+            if cell_fn is not None:
+                # Enlarging only the geometric filter is insufficient: parts() enumerates the supplied cells,
+                # so a fork just across a source-cell boundary would still be missing from one tile's surface.
+                reach = roadmesh.JUNCTION_MAX_PART_M + DECK_CONTEXT_M
+                la, lo, _ = frame.enu_to_geodetic(np.array([x0-reach, x1+reach, x0-reach, x1+reach]),
+                                                  np.array([y0-reach, y0-reach, y1+reach, y1+reach]), 0.0)
+                keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+                cells = list(cells or ())
+                known = {str(meta[0]) for f in cells if f is not None
+                         for meta in [getattr(f, '_bnge_cell', None)] if meta}
+                for key in keys:
+                    if str(key) not in known:
+                        features = cell_fn(key)
+                        if features is None:
+                            raise OSError(f'bridge junction context roads unavailable: {key}')
+                        cells.append(features)
             got = [(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in
                    bridges.parts(cells, (x0 - margin, y0 - margin, x1 + margin, y1 + margin))
                    if np.isfinite(z).all()]

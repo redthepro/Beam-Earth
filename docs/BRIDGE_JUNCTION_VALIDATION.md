@@ -16,7 +16,10 @@ slabs retain collision. Separate stacked levels are not combined.
 
 Complete profile metadata survives tile clipping and is transformed with the
 road skin on an anchor change. Short-profile context extends far enough for
-neighbouring tiles to reconstruct the same fork. Grid bounds extend from the
+neighbouring tiles to reconstruct the same fork. The matching source-cell
+envelope is loaded conditionally too: expanding a geometric box alone cannot
+discover features in an absent source cell. Missing required context fails the
+tile build instead of emitting an inconsistent partial fork. Grid bounds extend from the
 same analytic function when a pad or miter reaches beyond the initial grid;
 outside points cannot wrap through a clamped boundary cell.
 
@@ -35,7 +38,7 @@ intersect triangle interiors along generated road centres and both tyre tracks.
 | Wall protrusion above driving surface on those tracks | 0 m | 0 m |
 | Mesh vertices | 2,117 | 5,085 |
 | Mesh triangles | 1,947 | 6,899 |
-| Median mesh construction, 11 warm repetitions here | 9.32 ms | 85.14 ms |
+| Median mesh construction, 11 warm repetitions here | 9.36 ms | 83.17 ms |
 
 This is a deliberate construction/geometry cost for collision correctness,
 applied during the local companion's tile preparation rather than a per-frame gameplay task.
@@ -72,9 +75,19 @@ python server/tests/bench_bridge_junction.py --baseline-ref d4e6c6f
 The focused scenarios cover the real fork and ground approach, skin/marking
 agreement, sloped ramps and abutments, stacked forks and unrelated crossings,
 adjacent tiles, reordered input, anchor transformations, outside-grid queries,
-clipped long spans, ambiguous multipart identifiers, and legacy metadata.
-The existing road mesh, bridge profile/clearance/types, Otto Road, short-deck,
-road and geotile suites are also required before integration.
+clipped long spans, ambiguous multipart identifiers, and legacy metadata. A real
+map-cell boundary test exercises both `BridgeProfiles` and `ChainView` source
+enumeration, rather than handing both neighbours a preassembled complete fork.
+It fails in both modes before the source-cell correction and passes afterward.
+
+After integrating the height-aware pad/guardrail layer fix, the combined suites
+ran **223 tests in 13.48 seconds: 222 passed, one existing LuaJIT-unavailable
+skip**. These comprise `test_bridge_junction_surface` (15 tests),
+`test_deckpad_levels` (9), `test_roadmesh`, `test_bridgeprofile`,
+`test_bridge_clearance`, `test_bridgetypes`, `test_bridgelook`,
+`test_otto_bridge`, `test_shortdecks`, `test_roads`, and `test_geotiles`.
+The real overlap and ground-approach regressions also failed against the original
+mesh implementation before passing with the correction.
 
 Eligibility is intentionally bounded: **3–8 incident short parts, each at most
 60 m**, with matching endpoint position/elevation and complete unambiguous

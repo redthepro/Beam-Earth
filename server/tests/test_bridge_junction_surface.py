@@ -246,6 +246,59 @@ class BridgeJunctionSurfaceTest(unittest.TestCase):
         reverse = roadmesh._junction_surfaces(fork())['a']
         np.testing.assert_allclose(reverse.at(points[::-1])[::-1], z, atol=1e-10)
 
+    def test_source_cell_boundary_loads_all_incident_short_branches(self):
+        import geodesy
+        import mapcells
+        import mapgeom
+        from test_roads import features
+        west = mapcells.cell_of(FRAME.lat0, FRAME.lon0)
+        boundary = west.bounds()[2]
+        frame = geodesy.EnuFrame(west.center()[0], boundary, 0)
+        east = mapcells.cell_of(frame.lat0, boundary + .0001)
+
+        def source(lines, ids, key):
+            f = features(lines, ['primary'] * len(lines), ids=ids,
+                         flags=[(i, 'is_bridge') for i in range(len(lines))])
+            xy = np.concatenate([np.array(line) for line in lines])
+            la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0)
+            f.lonlat = np.c_[lo, la]
+            f.__dict__['_bnge_cell'] = (str(key), 'roads', 'fixture')
+            return f
+
+        incoming = source([[(-20, 0), (15, 0)]], ['a'], west)
+        outgoing = source([[(15, 0), (40, 5)], [(15, 0), (40, -8)]], ['b', 'c'], east)
+        cells = {west: incoming, east: outgoing}
+        requests = []
+
+        def fetch(key):
+            requests.append(key)
+            return cells.get(key, mapgeom.empty('roads'))
+
+        for mode in ('direct', 'chain_view'):
+            with self.subTest(mode=mode):
+                profiles = roads.BridgeProfiles(frame, fetch, flat) if mode == 'direct' else \
+                    roads.ChainView(roads.ChainStore(roads.BridgeProfiles, fetch, flat), frame)
+                # This tile's ordinary 2 m source margin stops west of the source-cell boundary. Merely
+                # expanding parts()'s bbox still enumerates only incoming and misses the fork on the east.
+                west_chunks = roads._bridge_chunks(frame, {}, flat, (-25, -12, -10, 12), profiles, [incoming])
+                east_chunks = roads._bridge_chunks(frame, {}, flat, (0, -12, 50, 12), profiles, [incoming, outgoing])
+                west_field = roadmesh._junction_surfaces(west_chunks)
+                east_field = roadmesh._junction_surfaces(east_chunks)
+                self.assertEqual(set(west_field), {'a', 'b', 'c'})
+                self.assertEqual(set(east_field), {'a', 'b', 'c'})
+                np.testing.assert_allclose(west_field['a'].at([[-15, 0], [16, 0]]),
+                                           east_field['a'].at([[-15, 0], [16, 0]]), atol=1e-10)
+                self.assertIn(east, requests)
+
+    def test_missing_source_context_fails_tile_instead_of_emitting_partial_fork(self):
+        from types import SimpleNamespace
+        c = fork()[0]
+        part = ('a', roads.Spec(8, 'paved', True, 'primary', False), np.array(c['n'])[:, :2],
+                np.array(c['n'])[:, 2], 0)
+        profile = SimpleNamespace(parts=lambda cells, box: [part], cell_fn=lambda key: None)
+        with self.assertRaisesRegex(OSError, 'bridge junction context roads unavailable'):
+            roads._bridge_chunks(FRAME, {}, flat, (-40, -10, -30, 10), profile, [])
+
 
 if __name__ == '__main__':
     unittest.main()
