@@ -2,6 +2,22 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.8.4-dev.5 (local development candidate, unpublished)
+
+- Give eligible short bridge forks a shared collision/asphalt surface, remove filler pads from
+  connecting ground carriageways, and keep junction pads and parapet openings on their elevation layer.
+  The captured Swiss fork's overlapping collision surfaces are corrected offline; physical driving
+  and other bridge geometries still need validation. See `docs/BRIDGE_JUNCTION_VALIDATION.md`.
+- Add opt-in authenticated server preparation of distant terrain and shared road-grading plans,
+  with bounded prediction, verified replies and local fallback. Real Linux-to-Windows LAN jobs pass;
+  client FPS and low-spec performance gains remain unmeasured.
+- Rebuild damaged road-plan caches instead of aborting grading. Accept valid native cliff constraints
+  in shared plans, reject changed source metadata and preserve helper state on compatibility refusals.
+- Harden streamed audio inputs and water initialization, scope spawn filtering, and add development-only
+  audio isolation and assistance counters. Production excludes the detailed capture provider.
+- Expand automated bridge regression gates. This candidate does not establish native crash resolution;
+  see `docs/RELEASE_1_8_4_DEV_5.md` for coverage, costs and pending runtime validation.
+
 ## 1.8.3 (2026-11-03, Beam-Earth fork)
 
 - Keep canceled tile producers tracked until their writes finish, preventing pooled shape files from

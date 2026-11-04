@@ -38,7 +38,7 @@ intersect triangle interiors along generated road centres and both tyre tracks.
 | Median mesh construction, 11 warm repetitions here | 9.32 ms | 85.14 ms |
 
 This is a deliberate construction/geometry cost for collision correctness,
-applied during server tile preparation rather than a per-frame gameplay task.
+applied during the local companion's tile preparation rather than a per-frame gameplay task.
 It is **not** a loading-time or FPS improvement claim. The earlier experimental
 0.5 m grid produced 46,485 vertices without fixing the approach pad; it is not
 the shipped approach. The accepted surface uses a 2 m grid and shares vertices.
