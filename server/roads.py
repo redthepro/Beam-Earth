@@ -6588,6 +6588,7 @@ PADS_ON = os.environ.get("BNE_DECK_PADS", "on") != "off"
 PAD_REACH_M = 12.0
 PAD_STEP_M = 2.0
 PAD_JOIN_M = 0.75           # m: ends this near are one joint (_skew_decks' tolerance)
+PAD_JOIN_Z_M = 0.75         # m: the full endpoint height spread of a physical joint, never a stacked crossing
 PAD_GROUND_M = 1.0          # m: a ground road's end this near a joint goes on from it
 PAD_STRAIGHT_COS = -0.97    # two parts leaving a joint this straight need none
 # The pad reaches PAD_MARGIN_M past the carriageways (a turn cut across the corner stays that far from its rim); the
@@ -6600,11 +6601,27 @@ PAD_WALL_DROP_M = 1.0
 PAD_RIM_STEP_M = 1.0
 
 
+def _pad_height_groups(parts):
+    """Split XY-coincident incident roads by endpoint height, with no transitive joins between levels.
+
+    Height ordering makes membership independent of deck input order. Keep the original order within each
+    group so an ordinary connected junction retains the native hull's existing input and tie behavior.
+    """
+    groups = []
+    for i in sorted(range(len(parts)), key=lambda k: float(parts[k][1][0])):
+        z = float(parts[i][1][0])
+        if not groups or z - float(parts[groups[-1][0]][1][0]) > PAD_JOIN_Z_M:
+            groups.append([])
+        groups[-1].append(i)
+    return [[parts[i] for i in sorted(group)] for group in groups]
+
+
 def deck_pads(decks, ground_roads, box, ground_fn, own=True):
     """[(ring (k, 3), centre (3,), walls [(pts (m, 3), out (m, 2))])] of the junction pads of the joints of decks
     [(fid, spec, xy (k, 2), z (k,))] (the bridge parts round tile box, as bridges.parts gives them) whose joint the box
     owns (own False: every joint, the parapets' test round the tile); ground_roads [(fid, spec, pts (k, 2+), _)] the
     ground carriageways near it (build_tile roads_out), the ground's heights ground_fn(xy) (the decks' abutments').
+    Only endpoints at matching elevations share a pad; XY-coincident stacked roads stay separate.
     walls: the rim's railings (PAD_*). earthfast.deck_pad, deck_pad_rim. Pure given ground_fn."""
     if not PADS_ON or not decks:
         return []
@@ -6626,11 +6643,12 @@ def deck_pads(decks, ground_roads, box, ground_fn, own=True):
     out = []
     gl = [(np.asarray(pts, np.float64)[:, :2], spec.width / 2) for _fid, spec, pts, _ in ground_roads
           if spec is not None and len(pts) >= 2]
-    for nd, parts in sorted(inc.items()):
+    joints = []
+    for nd, incident in sorted(inc.items()):
         q = nodes[nd]
         if own and not box_owns(box, float(q[0]), float(q[1])):
             continue
-        parts = list(parts)
+        groups = _pad_height_groups(incident)
         for line, half in gl:
             for at in (0, -1):
                 if np.hypot(*(line[at] - q)) < PAD_GROUND_M:
@@ -6638,7 +6656,20 @@ def deck_pads(decks, ground_roads, box, ground_fn, own=True):
                     s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
                     keep = s <= PAD_REACH_M + 2 * PAD_STEP_M
                     ln = ln[keep] if keep.sum() >= 2 else ln[:2]
-                    parts.append((ln, np.asarray(ground_fn(ln), np.float64), half))
+                    zz = np.asarray(ground_fn(ln), np.float64)
+                    if not np.isfinite(zz).all():
+                        continue
+                    # A street underneath an elevated endpoint is not its approach. If a street could match
+                    # two nearby groups, attach it only to the nearest one; it must not join them transitively.
+                    matches = []
+                    for k, group in enumerate(groups):
+                        heights = [float(p[1][0]) for p in group]
+                        if max(max(heights), zz[0]) - min(min(heights), zz[0]) <= PAD_JOIN_Z_M:
+                            matches.append((abs(float(zz[0]) - float(np.mean(heights))), k))
+                    if matches:
+                        groups[min(matches)[1]].append((ln, zz, half))
+        joints.extend((q, parts) for parts in groups)
+    for q, parts in joints:
         if len(parts) < 2:
             continue
         if len(parts) == 2:
@@ -6683,9 +6714,14 @@ def deck_pads(decks, ground_roads, box, ground_fn, own=True):
     return out
 
 
-def pad_inside(pads, xy, shrink=0.3):
-    """Per point of xy (n, 2): inside a pad of pads (deck_pads) by shrink m or more (its interior: no parapet). Pure."""
+def pad_inside(pads, xy, shrink=0.3, z=None):
+    """Inside a junction pad by shrink m; with z, only at its local surface height.
+
+    The optional height check uses the same centre fan as the pad mesh. A pad on a lower street must not
+    remove an overpass's parapets, even if the pad's height range reaches the overpass elsewhere. Pure.
+    """
     xy = np.asarray(xy, np.float64).reshape(-1, 2)
+    heights = None if z is None else np.broadcast_to(np.asarray(z, np.float64), (len(xy),))
     out = np.zeros(len(xy), bool)
     for pad in pads:
         r = np.asarray(pad[0], np.float64)[:, :2]
@@ -6695,7 +6731,21 @@ def pad_inside(pads, xy, shrink=0.3):
         # signed distance inside every edge (counter-clockwise: left of each edge is inside)
         d = ((e[None, :, 0] * (xy[:, None, 1] - a[None, :, 1]) - e[None, :, 1] * (xy[:, None, 0] - a[None, :, 0]))
              / ln[None, :])
-        out |= (d >= shrink).all(1)
+        inside = (d >= shrink).all(1)
+        if heights is not None and inside.any():
+            ring, centre = np.asarray(pad[0], np.float64), np.asarray(pad[1], np.float64)
+            aa, bb = ring[:, :2] - centre[:2], np.roll(ring[:, :2], -1, axis=0) - centre[:2]
+            det = aa[:, 0] * bb[:, 1] - aa[:, 1] * bb[:, 0]
+            valid = np.abs(det) > 1e-10
+            aa, bb, det = aa[valid], bb[valid], det[valid]
+            delta = xy[:, None] - centre[:2]
+            wa = (delta[:, :, 0] * bb[:, 1] - delta[:, :, 1] * bb[:, 0]) / det
+            wb = (aa[:, 0] * delta[:, :, 1] - aa[:, 1] * delta[:, :, 0]) / det
+            wc = 1.0 - wa - wb
+            triangle = (wa >= -1e-8) & (wb >= -1e-8) & (wc >= -1e-8)
+            local_z = wa * ring[valid, 2] + wb * np.roll(ring[:, 2], -1)[valid] + wc * centre[2]
+            inside &= (triangle & (np.abs(local_z - heights[:, None]) <= PAD_JOIN_Z_M)).any(1)
+        out |= inside
     return out
 
 

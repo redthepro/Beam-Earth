@@ -1355,7 +1355,8 @@ def parapet_runs(chunks, context=(), _rb=None, ground=(), pads=()):
         covered[n] = (covered[n][0] | (gl > 0), covered[n][1] | (gr > 0))
         if len(pads):               # (none inside a junction pad: roads.deck_pads)
             import roads as _roads
-            covered[n] = (covered[n][0] | _roads.pad_inside(pads, left), covered[n][1] | _roads.pad_inside(pads, right))
+            covered[n] = (covered[n][0] | _roads.pad_inside(pads, left, z=z),
+                          covered[n][1] | _roads.pad_inside(pads, right, z=z))
         el = left + u * np.maximum(wide, gl / 2 + 0.05)[:, None]
         er = right - u * np.maximum(wide, gr / 2 + 0.05)[:, None]
         k = len(z)
