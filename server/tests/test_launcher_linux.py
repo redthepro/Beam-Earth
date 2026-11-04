@@ -407,7 +407,7 @@ class WindowsTasklist(unittest.TestCase):
         self.assertEqual(self.run_with(out), [4242])
 
     def test_no_output(self):
-        self.assertEqual(self.run_with(None), [])
+        self.assertIsNone(self.run_with(None), "empty output does not establish that the game exited")
 
 
 class FlatpakGameProcess(unittest.TestCase):

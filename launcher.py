@@ -395,26 +395,41 @@ def windows_game_main_pids(pids):
         return pids
 
 
+def windows_process_pids(image):
+    """Matching PIDs, [] after a successful empty scan, or None when the scan is unknown."""
+    # Localized tasklist messages use the console's code page. Decode leniently,
+    # but never turn a failed/empty/malformed response into proof of process exit.
+    try:
+        result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+                                capture_output=True, timeout=PROCESS_QUERY_S,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    text = (result.stdout or b"").decode("utf-8", errors="replace")
+    if not text.strip():
+        return None
+    out = []
+    for line in text.splitlines():
+        if line.startswith('"') and not line.startswith(f'"{image}"'):
+            return None                 # truncated or unexpected CSV cannot establish absence
+        if line.startswith(f'"{image}"'):
+            try:
+                pid = int(line.split('","')[1])
+                if pid <= 0:
+                    return None
+                out.append(pid)
+            except (IndexError, ValueError):
+                return None
+    return out
+
+
 def game_pids():
-    """The game's main processes (not its CEF helpers)."""
+    """The game's main processes (not its CEF helpers), or None when Windows cannot be inspected."""
     if IS_WIN:
-        # bytes, decoded leniently: on a non-English Windows tasklist's "no tasks" message is in the console's code
-        # page (German "ü" = 0x81 in cp850), which text=True's cp1252 could not decode (a player's report,
-        # 2026-10-17: the launcher stopped with UnicodeDecodeError and r.stdout None)
-        try:
-            r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {GAME_EXE_WIN}", "/FO", "CSV", "/NH"],
-                               capture_output=True, timeout=PROCESS_QUERY_S)
-        except (OSError, subprocess.TimeoutExpired):
-            return []
-        text = (r.stdout or b"").decode("utf-8", errors="replace")
-        out = []
-        for line in text.splitlines():
-            if line.startswith(f'"{GAME_EXE_WIN}"'):
-                try:
-                    out.append(int(line.split('","')[1]))
-                except (IndexError, ValueError):
-                    pass
-        return windows_game_main_pids(out)
+        pids = windows_process_pids(GAME_EXE_WIN)
+        return None if pids is None else windows_game_main_pids(pids)
     out = []
     for d in os.listdir("/proc"):
         if not d.isdigit():
@@ -460,7 +475,11 @@ def game_connected():
 
 
 def game_alive():
-    return bool(game_pids()) or game_connected()
+    """True: present; False: confirmed absent; None: the process scan failed."""
+    pids = game_pids()
+    if pids or game_connected():
+        return True
+    return None if pids is None else False
 
 
 def steam_running():
@@ -930,22 +949,18 @@ def watch_game_log(user_dir, since):
 
 def game_launcher_running():
     """Windows: BeamNG's own launcher (BeamNG.drive.exe, its renderer / launch options window) is open: the game is
-    starting, however long the player takes there."""
+    starting, however long the player takes there. None when the process scan fails."""
     if not IS_WIN:
         return False
-    try:
-        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq BeamNG.drive.exe", "/FO", "CSV", "/NH"],
-                           capture_output=True, timeout=PROCESS_QUERY_S)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return '"BeamNG.drive.exe"' in (r.stdout or b"").decode("utf-8", errors="replace")
+    pids = windows_process_pids("BeamNG.drive.exe")
+    return None if pids is None else bool(pids)
 
 
 def wait_for_game(proc, server=None):
     """Follow the actual game, with bounded failed startup and cleanup when our server exits."""
     deadline = time.monotonic() + GAME_START_S
     grace = WINDOWS_GAME_GONE_S if IS_WIN else GAME_GONE_S
-    started, dialog_seen = False, False
+    started, dialog_seen, warned_unknown = False, False, False
     gone_since = dialog_closed_since = None
     while True:
         if server is not None and server.poll() is not None:
@@ -953,7 +968,20 @@ def wait_for_game(proc, server=None):
             return False
         now = time.monotonic()
         direct_alive = proc is not None and proc.poll() is None
-        if game_alive() or (not IS_WIN and direct_alive):
+        alive = game_alive()
+        if not IS_WIN and direct_alive:
+            alive = True
+        dialog = (True if IS_WIN and direct_alive else game_launcher_running()) \
+            if alive is False and not started else False
+        if alive is None or dialog is None:
+            # Time spent unable to inspect Windows is not confirmed absence.
+            # Reset both grace periods, including a pending startup deadline.
+            gone_since = dialog_closed_since = None
+            deadline = now + GAME_START_S
+            if not warned_unknown:
+                say("Game process status is unavailable; keeping the world server running and retrying.")
+                warned_unknown = True
+        elif alive:
             started = True
             gone_since = None
         elif started:
@@ -961,7 +989,7 @@ def wait_for_game(proc, server=None):
                 gone_since = now
             elif now - gone_since >= grace:
                 return True
-        elif game_launcher_running() or (IS_WIN and direct_alive):
+        elif dialog:
             # Never time out an open BeamNG launch dialog. Once the game has been seen, its bootstrap
             # process no longer keeps this launcher alive after the actual game closes.
             dialog_seen = True
@@ -1451,6 +1479,18 @@ def run(args):
     row("Game folder", user_dir + ("  (the Windows build, Proton)" if build == "proton" else "")
         + (f"  (Steam compatibility tool: {tool})" if tool else ""))       # (which was read: GitHub #56)
     running = game_alive()
+    if running is None:
+        say("Game process status is unavailable; retrying before changing the game or starting services.")
+        for _ in range(2):
+            time.sleep(1)
+            running = game_alive()
+            if running is not None:
+                break
+        if running is None:
+            problem("Cannot confirm whether BeamNG.drive is running.",
+                    "Wait a moment and try BeamNG.Earth again. The game, mod and existing services were left "
+                    "untouched; you can keep playing if the game is already open.")
+            return
     if not running:
         install.clear_reload_files(user_dir)
     reload_game = False

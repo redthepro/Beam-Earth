@@ -31,8 +31,8 @@ class GameLifecycleTest(unittest.TestCase):
         with mock.patch.object(launcher, "IS_WIN", windows), \
                 mock.patch.object(launcher.time, "monotonic", side_effect=lambda: clock.now), \
                 mock.patch.object(launcher.time, "sleep", side_effect=clock.sleep), \
-                mock.patch.object(launcher, "game_alive", side_effect=lambda: bool(alive and alive(clock.now))), \
-                mock.patch.object(launcher, "game_launcher_running", side_effect=lambda: bool(dialog and dialog(clock.now))), \
+                mock.patch.object(launcher, "game_alive", side_effect=lambda: alive(clock.now) if alive else False), \
+                mock.patch.object(launcher, "game_launcher_running", side_effect=lambda: dialog(clock.now) if dialog else False), \
                 mock.patch.object(launcher, "say"):
             result = launcher.wait_for_game(proc, server)
         return result, clock.now
@@ -77,6 +77,41 @@ class GameLifecycleTest(unittest.TestCase):
         self.assertEqual(elapsed, 1 + launcher.WINDOWS_GAME_GONE_S)
         proc.wait.assert_not_called()
 
+    def test_unknown_scan_resets_confirmed_exit_grace(self):
+        result, elapsed = self.follow(alive=lambda t: True if t < 1 else None if 2 <= t < 10 else False)
+        self.assertTrue(result)
+        self.assertEqual(elapsed, 10 + launcher.WINDOWS_GAME_GONE_S)
+
+    def test_unknown_game_or_dialog_keeps_services_until_server_exits(self):
+        for alive, dialog in ((lambda t: None, None), (None, lambda t: None)):
+            with self.subTest(dialog=bool(dialog)):
+                result, elapsed = self.follow(alive=alive, dialog=dialog, server_exit=launcher.GAME_START_S + 10)
+                self.assertFalse(result)
+                self.assertEqual(elapsed, launcher.GAME_START_S + 10)
+
+    def test_repeated_tasklist_timeouts_do_not_report_live_game_closed(self):
+        clock = Clock()
+        queries = []
+
+        def tasklist(command, **kwargs):
+            queries.append(clock.now)
+            if len(queries) in (2, 3):
+                clock.sleep(launcher.PROCESS_QUERY_S)
+                raise subprocess.TimeoutExpired(command, launcher.PROCESS_QUERY_S)
+            output = (b'"BeamNG.drive.x64.exe","1234","Console","1","100 K"\r\n' if clock.now < 20
+                      else b'INFO: No tasks are running which match the specified criteria.\r\n')
+            return subprocess.CompletedProcess(command, 0, stdout=output)
+
+        with mock.patch.object(launcher, "IS_WIN", True), \
+                mock.patch.object(launcher.subprocess, "run", side_effect=tasklist), \
+                mock.patch.object(launcher, "windows_game_main_pids", side_effect=lambda pids: pids), \
+                mock.patch.object(launcher.time, "monotonic", side_effect=lambda: clock.now), \
+                mock.patch.object(launcher.time, "sleep", side_effect=clock.sleep), \
+                mock.patch.object(launcher, "say"):
+            self.assertTrue(launcher.wait_for_game(None))
+        self.assertEqual(clock.now, 20 + launcher.WINDOWS_GAME_GONE_S)
+        self.assertGreater(len(queries), 3, "must recover from the two timeouts before reporting exit")
+
 
 class WindowsGameHelpersTest(unittest.TestCase):
     def query(self, entries, pids=(10, 11), exception=None):
@@ -96,6 +131,79 @@ class WindowsGameHelpersTest(unittest.TestCase):
         self.assertEqual(self.query([{"ProcessId": 10, "CommandLine": None}]), [10, 11])
         self.assertEqual(self.query(None), [10, 11])
         self.assertEqual(self.query(None, exception=subprocess.TimeoutExpired("powershell", 3)), [10, 11])
+
+    def test_failed_tasklist_queries_preserve_unknown(self):
+        for error in (OSError("query failed"), subprocess.TimeoutExpired("tasklist", 3)):
+            with self.subTest(error=type(error).__name__), mock.patch.object(launcher, "IS_WIN", True), \
+                    mock.patch.object(launcher.subprocess, "run", side_effect=error):
+                self.assertIsNone(launcher.game_pids())
+                self.assertIsNone(launcher.game_alive())
+                self.assertIsNone(launcher.game_launcher_running())
+
+    def test_nonzero_empty_or_malformed_tasklist_is_unknown(self):
+        for code, output in ((1, b"query failed"), (0, b""), (0, b'"BeamNG.drive.x64.exe'),
+                             (0, b'"BeamNG.drive.x64.exe","bad"'),
+                             (0, b'"BeamNG.drive.x64.exe"'), (0, b'"BeamNG.drive.x64.exe","0"')):
+            with self.subTest(code=code, output=output), mock.patch.object(launcher, "IS_WIN", True), \
+                    mock.patch.object(launcher.subprocess, "run", return_value=mock.Mock(returncode=code, stdout=output)):
+                self.assertIsNone(launcher.game_alive())
+
+    def test_positive_connection_overrides_unknown_process_scan(self):
+        with mock.patch.object(launcher, "game_pids", return_value=None), \
+                mock.patch.object(launcher, "game_connected", return_value=True):
+            self.assertIs(launcher.game_alive(), True)
+
+
+class InitialGameScanTest(unittest.TestCase):
+    def launch(self, states):
+        import install
+        args = argparse.Namespace(user_dir="game-user", build=None, keep_mod=False, game_dir=None,
+                                  no_game=False, extra=[], cache_dir=None, no_gcpatch=False, gfx=None)
+        server, process = mock.Mock(), mock.Mock()
+        patches = {}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(launcher, "IS_WIN", True))
+            scan = stack.enter_context(mock.patch.object(launcher, "game_alive", side_effect=states))
+            sleep = stack.enter_context(mock.patch.object(launcher.time, "sleep"))
+            for owner, name, result in (
+                    (install, "version", "1.8.4-dev.5"), (install, "clear_reload_files", None),
+                    (install, "install_mod", "updated"), (install, "reload_running_game", True),
+                    (launcher, "title", None), (launcher, "support_notice", None), (launcher, "say", None),
+                    (launcher, "row", None), (launcher, "problem", None), (launcher, "data_dir", "test-data"),
+                    (launcher, "under_wine", False), (launcher, "windows_game_dir", "game-folder"),
+                    (launcher, "ask_game_dir", None), (launcher, "cache_dir_arg", None),
+                    (launcher, "server_port_busy", False), (launcher, "start_server", server),
+                    (launcher, "wait_server_ready", True), (launcher, "beammp_up", None),
+                    (launcher, "watch_game_log", None), (launcher, "start_game", process),
+                    (launcher, "wait_for_game", True), (launcher, "stop_server", None)):
+                patches[name] = stack.enter_context(mock.patch.object(owner, name, return_value=result))
+            launcher.run(args)
+        return patches, scan, sleep, server, process
+
+    def test_persistent_unknown_leaves_game_mod_and_services_untouched(self):
+        calls, scan, sleep, _, _ = self.launch([None, None, None])
+        self.assertEqual(scan.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        calls["problem"].assert_called_once()
+        for name in ("clear_reload_files", "install_mod", "reload_running_game", "ask_game_dir",
+                     "start_server", "stop_server", "beammp_up", "start_game", "wait_for_game"):
+            calls[name].assert_not_called()
+
+    def test_confirmed_absence_after_unknown_resumes_normal_launch(self):
+        calls, scan, _, server, process = self.launch([None, False])
+        self.assertEqual(scan.call_count, 2)
+        calls["clear_reload_files"].assert_called_once_with("game-user")
+        calls["start_game"].assert_called_once()
+        calls["reload_running_game"].assert_not_called()
+        calls["wait_for_game"].assert_called_once_with(process, server)
+
+    def test_confirmed_presence_after_unknown_does_not_launch_again(self):
+        calls, scan, _, server, _ = self.launch([None, True])
+        self.assertEqual(scan.call_count, 2)
+        calls["clear_reload_files"].assert_not_called()
+        calls["start_game"].assert_not_called()
+        calls["reload_running_game"].assert_called_once_with("game-user")
+        calls["wait_for_game"].assert_called_once_with(None, server)
 
 
 class ServerReadinessTest(unittest.TestCase):
